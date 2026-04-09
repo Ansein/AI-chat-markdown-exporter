@@ -54,13 +54,31 @@
 
 ## 安装方法
 
+### 从 GitHub 获取代码
+
+用户可以通过两种方式拿到项目文件：
+
+#### 方式 A：下载 ZIP
+
+1. 打开 GitHub 仓库主页
+2. 点击 **Code**
+3. 点击 **Download ZIP**
+4. 解压到本地任意文件夹
+
+#### 方式 B：使用 Git 克隆
+
+```bash
+git clone <your-repo-url>
+cd <your-repo-folder>
+```
+
 ### 开发模式安装（推荐用于测试）
 
 1. 打开 Chrome/Edge 浏览器
 2. 访问 `chrome://extensions/` (Chrome) 或 `edge://extensions/` (Edge)
 3. 开启右上角的 **"开发者模式"**
 4. 点击 **"加载已解压的扩展程序"**
-5. 选择本项目的文件夹
+5. 选择刚刚从 GitHub 下载或克隆下来的项目文件夹
 
 ### 加载后
 
@@ -78,7 +96,7 @@
 ## 文件结构
 
 ```
-AI 对话抓取小工具/
+<your-repo-folder>/
 ├── manifest.json       # 扩展配置文件
 ├── background.js       # Service Worker，处理导出逻辑
 ├── content.js          # 内容脚本，负责页面数据采集
