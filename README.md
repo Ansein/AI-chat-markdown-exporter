@@ -177,7 +177,7 @@ async function extractNewPlatformData() {
 
 ## License
 
-MIT - 仅供私人使用
+仅供私人使用
 
 ## 反馈
 
