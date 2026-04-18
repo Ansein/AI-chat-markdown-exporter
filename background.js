@@ -1,7 +1,5 @@
 // background.js - Service Worker for AI Session Export Tool
 
-var OFFSCREEN_REASON = 'file-download';
-
 // ========== HTML to Markdown ==========
 function htmlToMarkdown(html) {
   if (!html) return '';
@@ -58,37 +56,6 @@ function decodeHtml(text) {
     .replace(/&#39;/gi, "'");
 }
 
-// ========== Offscreen Document Management ==========
-async function ensureOffscreen() {
-  var existing = await chrome.offscreen.getDocuments({});
-  if (existing.length > 0) return;
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['DOM_PARSER'],
-    justification: OFFSCREEN_REASON
-  });
-}
-
-async function offscreenDownload(filename, content, mimeType) {
-  await ensureOffscreen();
-  var result = await chrome.runtime.sendMessage({
-    type: 'TRIGGER_DOWNLOAD',
-    filename: filename,
-    content: content,
-    mimeType: mimeType
-  });
-  if (!result || !result.success) {
-    throw new Error(result && result.error ? result.error : 'Offscreen download failed');
-  }
-  // Close offscreen document after download
-  setTimeout(function() {
-    chrome.offscreen.getDocuments({}).then(function(docs) {
-      if (docs.length > 0) chrome.offscreen.closeDocument(docs[0].id);
-    });
-  }, 2000);
-  return { success: true, filename: filename };
-}
-
 // ========== Export Functions ==========
 function getDefaultSettings() {
   return {
@@ -105,17 +72,17 @@ function convertToMarkdown(conversation, settings) {
   var md = '';
   if (settings.includeModelInfo) {
     md += '---\n';
-    md += '标题：' + (conversation.title || '未命名会话') + '\n';
-    md += '平台：' + (conversation.platform || 'AI 会话') + '\n';
-    if (conversation.model) md += '模型：' + conversation.model + '\n';
-    if (conversation.createTime) md += '创建时间：' + conversation.createTime + '\n';
-    md += '导出时间：' + new Date().toISOString() + '\n';
+    md += '\u6807\u9898\uff1a' + (conversation.title || '\u672a\u547d\u540d\u4f1a\u8bdd') + '\n';
+    md += '\u5e73\u53f0\uff1a' + (conversation.platform || 'AI \u4f1a\u8bdd') + '\n';
+    if (conversation.model) md += '\u6a21\u578b\uff1a' + conversation.model + '\n';
+    if (conversation.createTime) md += '\u521b\u5efa\u65f6\u95f4\uff1a' + conversation.createTime + '\n';
+    md += '\u5bfc\u51fa\u65f6\u95f4\uff1a' + new Date().toISOString() + '\n';
     md += '---\n\n';
   }
 
   if (conversation.messages) {
     conversation.messages.forEach(function(msg) {
-      var roleLabel = msg.role === 'user' ? '用户' : 'AI';
+      var roleLabel = msg.role === 'user' ? '\u7528\u6237' : 'AI';
       md += '## ' + roleLabel;
       if (settings.includeTimestamp && msg.createdAt) {
         md += ' *(' + msg.createdAt + ')*';
@@ -123,7 +90,7 @@ function convertToMarkdown(conversation, settings) {
       md += '\n\n';
 
       if (settings.includeReasoningSummary && msg.reasoning_summary) {
-        md += '<details>\n<summary>思考过程</summary>\n\n';
+        md += '<details>\n<summary>\u601d\u8003\u8fc7\u7a0b</summary>\n\n';
         md += msg.reasoning_summary + '\n\n';
         md += '</details>\n\n';
       }
@@ -138,9 +105,9 @@ function convertToMarkdown(conversation, settings) {
       md += '\n\n';
 
       if (settings.includeReferences && msg.citations && msg.citations.length > 0) {
-        md += '### 引用来源\n\n';
+        md += '### \u5f15\u7528\u6765\u6e90\n\n';
         msg.citations.forEach(function(cite, idx) {
-          md += (idx + 1) + '. [' + (cite.title || '无标题') + '](' + cite.url + ')\n';
+          md += (idx + 1) + '. [' + (cite.title || '\u65e0\u6807\u9898') + '](' + cite.url + ')\n';
         });
         md += '\n';
       }
@@ -153,7 +120,7 @@ function convertToMarkdown(conversation, settings) {
 function generateFilename(conversation, settings) {
   var timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
   var title = (conversation.title || extractTitleFromMessages(conversation.messages))
-    .replace(/[\\/:*?"<>|]/g, '_').slice(0, 50);
+    .replace(/[\/:*?"<>|]/g, '_').slice(0, 50);
   return settings.filenameTemplate
     .replace('{title}', title)
     .replace('{timestamp}', timestamp)
@@ -161,12 +128,12 @@ function generateFilename(conversation, settings) {
 }
 
 function extractTitleFromMessages(messages) {
-  if (!messages || messages.length === 0) return '未命名会话';
+  if (!messages || messages.length === 0) return '\u672a\u547d\u540d\u4f1a\u8bdd';
   var firstUserMsg = messages.find(function(m) { return m.role === 'user'; });
-  if (!firstUserMsg) return '未命名会话';
+  if (!firstUserMsg) return '\u672a\u547d\u540d\u4f1a\u8bdd';
   var text = firstUserMsg.contentText || firstUserMsg.contentMarkdown || '';
   var title = text.split('\n')[0].slice(0, 50).trim();
-  return title || '未命名会话';
+  return title || '\u672a\u547d\u540d\u4f1a\u8bdd';
 }
 
 // ========== Message Listeners ==========
@@ -178,8 +145,17 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log('[AI Export] Received message:', message.type);
 
   switch (message.type) {
-    case 'EXPORT_REQUEST':
-      handleExportRequest(message.data, sendResponse);
+    case 'CONVERT_TO_MARKDOWN':
+      try {
+        var conversation = message.data.conversation;
+        var settings = message.data.settings;
+        var markdown = convertToMarkdown(conversation, settings);
+        var filename = generateFilename(conversation, settings);
+        sendResponse({ success: true, markdown: markdown, filename: filename });
+      } catch (error) {
+        console.error('[AI Export] Conversion failed:', error);
+        sendResponse({ success: false, error: error.message });
+      }
       return true;
     case 'GET_EXPORT_SETTINGS':
       chrome.storage.local.get(['exportSettings'], function(result) {
@@ -195,20 +171,6 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
       sendResponse({ error: 'Unknown message type' });
   }
 });
-
-async function handleExportRequest(data, sendResponse) {
-  try {
-    var conversation = data.conversation;
-    var settings = data.settings;
-    var markdown = convertToMarkdown(conversation, settings);
-    var filename = generateFilename(conversation, settings);
-    var result = await offscreenDownload(filename, markdown, 'text/markdown;charset=utf-8');
-    sendResponse({ success: true, filename: result.filename });
-  } catch (error) {
-    console.error('[AI Export] Export failed:', error);
-    sendResponse({ success: false, error: error.message });
-  }
-}
 
 chrome.storage.local.get(['exportSettings'], function(result) {
   if (!result.exportSettings) {
