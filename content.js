@@ -147,75 +147,53 @@ async function extractChatGPTData() {
 }
 
 // 从 Claude 页面提取数据
-// 从 Claude 页面提取数据
+
+// ========== Claude 提取 ==========
 async function extractClaudeData() {
   console.log('[AI Export] Extracting Claude data...');
 
-  // 优先：使用 API 拦截数据（由 injected.js 捕获）
+  // 优先使用 API 拦截数据（由 injected.js 捕获）
   const apiData = window.__AI_EXPORT__?.getData?.();
   if (apiData?.messages?.length > 0) {
     console.log('[AI Export] Using API-intercepted data:', apiData.messages.length, 'messages');
-    return {
-      messages: apiData.messages,
-      model: apiData.metadata?.model,
-      createTime: apiData.metadata?.createTime,
-      meta: apiData.metadata || {},
-    };
+    return { messages: apiData.messages, model: apiData.metadata?.model, meta: apiData.metadata || {} };
   }
 
-  // 兜底：DOM 提取
-  console.log('[AI Export] No API data available, falling back to DOM extraction');
   return extractClaudeDataFromDOM();
 }
 
 async function extractClaudeDataFromDOM() {
   console.log('[AI Export] Extracting Claude data from DOM...');
-
   await waitForElement('[data-testid="user-message"], .font-claude-response', 5000).catch(() => {});
 
   const allElements = [];
-  document.querySelectorAll('[data-testid="user-message"]').forEach(el => {
-    allElements.push({ el, type: 'user' });
-  });
-  document.querySelectorAll('.font-claude-response').forEach(el => {
-    allElements.push({ el, type: 'assistant' });
-  });
+  document.querySelectorAll('[data-testid="user-message"]').forEach(el => allElements.push({ el, type: 'user' }));
+  document.querySelectorAll('.font-claude-response').forEach(el => allElements.push({ el, type: 'assistant' }));
 
-  const sortedElements = sortByDocumentOrder(allElements.map(item => item.el))
-    .map(el => allElements.find(item => item.el === el));
+  const sortedElements = [...allElements.map(item => item.el)].sort((a, b) => {
+    const pos = a.compareDocumentPosition(b);
+    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  }).map(el => allElements.find(item => item.el === el));
 
   const messages = [];
   sortedElements.forEach((item, index) => {
     try {
       const msg = extractClaudeMessageFromElement(item.el, item.type, index);
       if (msg) messages.push(msg);
-    } catch (err) {
-      console.error('[AI Export] Failed to extract Claude message:', err);
-    }
+    } catch (err) { console.error('[AI Export] Failed to extract Claude message:', err); }
   });
 
-  if (messages.length === 0) {
-    messages.push(...extractClaudeMessagesGeneric());
-  }
-
+  if (messages.length === 0) messages.push(...extractClaudeMessagesGeneric());
   return { messages };
-}
-
-function sortByDocumentOrder(elements) {
-  return [...elements].sort((a, b) => {
-    const pos = a.compareDocumentPosition(b);
-    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-    if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-    return 0;
-  });
 }
 
 function extractClaudeMessageFromElement(el, type, index) {
   const message = { id: `msg-${index}`, role: type === 'user' ? 'user' : 'assistant' };
 
   if (type === 'user') {
-    const contentText = el.textContent?.trim() || '';
-    message.contentText = contentText;
+    message.contentText = el.textContent?.trim() || '';
     message.contentHtml = el.innerHTML;
     message.contentMarkdown = htmlToMarkdownSimple(el.innerHTML);
     const attachments = [];
@@ -234,9 +212,9 @@ function extractClaudeMessageFromElement(el, type, index) {
       if (thinkingEl) {
         if (thinkingEl.tagName.toLowerCase() === 'details') {
           const summary = thinkingEl.querySelector('summary');
-          const detailsContent = summary ? thinkingEl.innerHTML.replace(summary.outerHTML, '') : thinkingEl.innerHTML;
+          const dc = summary ? thinkingEl.innerHTML.replace(summary.outerHTML, '') : thinkingEl.innerHTML;
           const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = detailsContent;
+          tempDiv.innerHTML = dc;
           message.reasoning_summary = tempDiv.textContent?.trim() || null;
         } else {
           message.reasoning_summary = thinkingEl.textContent?.trim() || null;
@@ -245,7 +223,6 @@ function extractClaudeMessageFromElement(el, type, index) {
     }
     message.citations = extractCitations(el);
   }
-
   return message;
 }
 
@@ -484,7 +461,7 @@ function serializeNode(node, indent = 0, inlineContext = false) {
     case 'h5':
     case 'h6': {
       const level = Number(tag[1]);
-      const title = normalizeInlineText(getVisibleText(el));
+      const title = serializeInlineChildren(el, indent);
       return `\n${'#'.repeat(level)} ${title}\n\n`;
     }
 
