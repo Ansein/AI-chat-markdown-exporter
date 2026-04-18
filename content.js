@@ -507,25 +507,11 @@ function serializeNode(node, inlineContext) {
       return quoted + '\n\n';
     }
 
-    case 'ul': {
-      var items = Array.from(el.children).filter(function(child) { return child.tagName && child.tagName.toLowerCase() === 'li'; });
-      if (!items.length) return '';
-      var result = '';
-      items.forEach(function(li) {
-        result += '- ' + (li.textContent ? li.textContent.trim() : '') + '\n';
-      });
-      return result + '\n';
-    }
+    case 'ul':
+      return serializeList(el, false);
 
-    case 'ol': {
-      var oItems = Array.from(el.children).filter(function(child) { return child.tagName && child.tagName.toLowerCase() === 'li'; });
-      if (!oItems.length) return '';
-      var oResult = '';
-      oItems.forEach(function(li, idx) {
-        oResult += (idx + 1) + '. ' + (li.textContent ? li.textContent.trim() : '') + '\n';
-      });
-      return oResult + '\n';
-    }
+    case 'ol':
+      return serializeList(el, true);
 
     case 'table': {
       var rows = el.querySelectorAll('tr');
@@ -631,6 +617,55 @@ function extractMathMarkdown(el, inlineContext) {
   }
 
   return '$' + cleanLatex + '$';
+}
+
+function serializeList(listEl, ordered) {
+  var items = Array.from(listEl.children).filter(function(child) { return child.tagName && child.tagName.toLowerCase() === 'li'; });
+  if (!items.length) return '';
+
+  var result = '';
+  items.forEach(function(li, index) {
+    result += serializeListItem(li, ordered ? (index + 1) + '.' : '-');
+  });
+  return result + '\n';
+}
+
+function serializeListItem(li, marker) {
+  var inlineParts = '';
+  var nestedParts = '';
+
+  li.childNodes.forEach(function(child) {
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      var tag = child.tagName.toLowerCase();
+      if (tag === 'ul' || tag === 'ol') {
+        nestedParts += serializeList(child, tag === 'ol');
+        return;
+      }
+      if (tag === 'p') {
+        var text = serializeInlineChildren(child).trim();
+        if (text) inlineParts += (inlineParts ? ' ' : '') + text;
+        return;
+      }
+      if (tag === 'pre') {
+        nestedParts += serializeNode(child, false);
+        return;
+      }
+    }
+
+    var fragment = serializeNode(child, true).trim();
+    if (fragment) {
+      inlineParts += (inlineParts ? ' ' : '') + fragment;
+    }
+  });
+
+  var result = '';
+  if (inlineParts) {
+    result += marker + ' ' + inlineParts + '\n';
+  }
+  if (nestedParts) {
+    result += nestedParts;
+  }
+  return result;
 }
 
 function serializePreformattedText(root) {
