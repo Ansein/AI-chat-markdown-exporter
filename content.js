@@ -147,7 +147,7 @@ async function extractChatGPTData() {
 }
 
 // 从 Claude 页面提取数据
-// ========== Claude 提取 ==========
+// 从 Claude 页面提取数据
 async function extractClaudeData() {
   console.log('[AI Export] Extracting Claude data...');
 
@@ -171,23 +171,16 @@ async function extractClaudeData() {
 async function extractClaudeDataFromDOM() {
   console.log('[AI Export] Extracting Claude data from DOM...');
 
-  // 等待页面加载完成
   await waitForElement('[data-testid="user-message"], .font-claude-response', 5000).catch(() => {});
 
-  // 收集所有消息元素
   const allElements = [];
-
-  // 用户消息
   document.querySelectorAll('[data-testid="user-message"]').forEach(el => {
     allElements.push({ el, type: 'user' });
   });
-
-  // AI 消息
   document.querySelectorAll('.font-claude-response').forEach(el => {
     allElements.push({ el, type: 'assistant' });
   });
 
-  // 按文档顺序排序
   const sortedElements = sortByDocumentOrder(allElements.map(item => item.el))
     .map(el => allElements.find(item => item.el === el));
 
@@ -201,9 +194,7 @@ async function extractClaudeDataFromDOM() {
     }
   });
 
-  // 如果 DOM 提取也没找到，尝试通用兜底
   if (messages.length === 0) {
-    console.warn('[AI Export] No messages found with known selectors, trying generic extraction');
     messages.push(...extractClaudeMessagesGeneric());
   }
 
@@ -220,23 +211,16 @@ function sortByDocumentOrder(elements) {
 }
 
 function extractClaudeMessageFromElement(el, type, index) {
-  const message = {
-    id: `msg-${index}`,
-    role: type === 'user' ? 'user' : 'assistant',
-  };
+  const message = { id: `msg-${index}`, role: type === 'user' ? 'user' : 'assistant' };
 
   if (type === 'user') {
     const contentText = el.textContent?.trim() || '';
     message.contentText = contentText;
     message.contentHtml = el.innerHTML;
     message.contentMarkdown = htmlToMarkdownSimple(el.innerHTML);
-
-    // 文件附件
     const attachments = [];
     el.querySelectorAll('[data-testid="file-thumbnail"]').forEach(ft => {
-      attachments.push({
-        name: ft.textContent?.trim() || ft.getAttribute('data-file-name') || 'attachment',
-      });
+      attachments.push({ name: ft.textContent?.trim() || ft.getAttribute('data-file-name') || 'attachment' });
     });
     if (attachments.length > 0) message.attachments = attachments;
   } else {
@@ -244,8 +228,6 @@ function extractClaudeMessageFromElement(el, type, index) {
     message.contentHtml = proseEl.innerHTML;
     message.contentText = proseEl.textContent?.trim() || '';
     message.contentMarkdown = htmlToMarkdownSimple(proseEl.innerHTML);
-
-    // 提取思考过程
     const turnContainer = el.closest('[data-test-render-count]') || el.parentElement;
     if (turnContainer) {
       const thinkingEl = turnContainer.querySelector('[class*="thinking"], [class*="reasoning"], details');
@@ -261,7 +243,6 @@ function extractClaudeMessageFromElement(el, type, index) {
         }
       }
     }
-
     message.citations = extractCitations(el);
   }
 
@@ -272,197 +253,63 @@ function extractClaudeMessagesGeneric() {
   const messages = [];
   const mainEl = document.querySelector('[role="main"]');
   if (!mainEl) return messages;
-
   const allBlocks = mainEl.querySelectorAll('p, div[class*="prose"], [class*="message"], [class*="response"]');
   let lastRole = null;
-
   allBlocks.forEach((el, index) => {
     const text = el.textContent?.trim() || '';
     if (text.length < 10) return;
-
     const hasFeedback = !!el.closest('article, div')?.querySelector('button[aria-label*="feedback"]');
     let role = hasFeedback ? 'assistant' : (lastRole === 'assistant' ? 'user' : 'user');
     if (role === lastRole) role = role === 'user' ? 'assistant' : 'user';
-
-    messages.push({
-      id: `msg-${index}`,
-      role,
-      contentText: text,
-      contentHtml: el.innerHTML,
-      contentMarkdown: htmlToMarkdownSimple(el.innerHTML),
-    });
+    messages.push({ id: `msg-${index}`, role, contentText: text, contentHtml: el.innerHTML, contentMarkdown: htmlToMarkdownSimple(el.innerHTML) });
     lastRole = role;
   });
-
   return messages;
 }
 
-// ========== 通用 DOM 提取（兜底） ==========
+
+// 通用 DOM 提取（兜底方案）
 async function extractDataFromDOM() {
   console.log('[AI Export] Using DOM fallback extraction...');
 
   const messages = [];
 
-  // 策略：直接找消息级别的最小单元，而非外层容器
-  const allElements = document.querySelectorAll(
-    'article, [role="article"], [class*="message"], [class*="prompt"], ' +
-    '[class*="response"], [class*="assistant"], [class*="human"], ' +
-    '[class*="user-bubble"], [class*="ai-bubble"], [class*="chat-message"], ' +
-    '[data-role], [data-sender]'
-  );
+  // 尝试查找所有可能是消息容器的元素
+  const containers = document.querySelectorAll('[class*="message"], [class*="conversation"], [class*="chat"], article, section');
 
-  // 去重：只保留最深层的消息元素
-  const leafMessages = [];
-  allElements.forEach(el => {
-    let hasNested = false;
-    el.querySelectorAll('article, [role="article"], [class*="message"], [class*="prompt"], [class*="response"], [class*="assistant"], [class*="human"]').forEach(nested => {
-      if (nested !== el) hasNested = true;
-    });
-    if (!hasNested) leafMessages.push(el);
-  });
-
-  const elementsToProcess = leafMessages.length > 0 ? leafMessages : Array.from(allElements);
-
-  // 去重
-  const uniqueElements = [];
-  const seen = new Set();
-  elementsToProcess.forEach(el => {
-    if (!seen.has(el)) {
-      seen.add(el);
-      uniqueElements.push(el);
+  containers.forEach((container, index) => {
+    // 跳过嵌套的消息
+    if (container.parentElement?.closest('[class*="message"]')) {
+      return;
     }
-  });
 
-  // 按文档顺序排序
-  uniqueElements.sort((a, b) => {
-    const pos = a.compareDocumentPosition(b);
-    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-    if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-    return 0;
-  });
-
-  uniqueElements.forEach((container, index) => {
     try {
-      const text = container.textContent?.trim() || '';
+      const text = container.textContent?.trim();
       if (!text || text.length < 10) return;
 
-      // 跳过导航、侧边栏等区域
-      if (isNonMessageArea(container)) return;
+      // 判断角色
+      const isUser = container.classList.contains('user') ||
+                     container.classList.contains('user-message') ||
+                     container.querySelector('[class*="user"]') !== null;
 
-      const role = detectMessageRole(container);
-
-      messages.push({
+      const message = {
         id: `msg-${index}`,
-        role,
+        role: isUser ? 'user' : 'assistant',
         contentText: text,
         contentHtml: container.innerHTML,
         contentMarkdown: htmlToMarkdownSimple(container.innerHTML),
-        citations: extractCitations(container),
-      });
+      };
+
+      messages.push(message);
     } catch (err) {
       console.error('[AI Export] Failed to extract from container:', err);
     }
   });
 
-  // 去重和角色修正
-  if (messages.length > 0) {
-    return { messages: deduplicateAndFixRoles(messages) };
-  }
-
   return { messages };
 }
 
-function isNonMessageArea(el) {
-  let parent = el.parentElement;
-  while (parent) {
-    const tag = parent.tagName.toLowerCase();
-    const cls = parent.className || '';
-    if (tag === 'nav' || tag === 'header' || tag === 'footer') return true;
-    if (typeof cls === 'string') {
-      const clsLower = cls.toLowerCase();
-      if (clsLower.includes('sidebar') || clsLower.includes('navigation') ||
-          clsLower.includes('menu') || clsLower.includes('toolbar')) return true;
-    }
-    parent = parent.parentElement;
-  }
-  return false;
-}
-
-function detectMessageRole(el) {
-  // 1. 检查 data 属性
-  const dataRole = el.getAttribute('data-role');
-  const dataSender = el.getAttribute('data-sender');
-  if (dataRole) {
-    const r = dataRole.toLowerCase();
-    if (r.includes('user') || r.includes('human')) return 'user';
-    if (r.includes('assistant') || r.includes('ai') || r.includes('bot')) return 'assistant';
-  }
-  if (dataSender) {
-    const s = dataSender.toLowerCase();
-    if (s === 'human' || s === 'user') return 'user';
-    if (s === 'assistant' || s === 'ai' || s === 'bot') return 'assistant';
-  }
-
-  // 2. 检查 class
-  const cls = (el.className || '').toLowerCase();
-  if (cls.includes('user') && !cls.includes('assistant')) return 'user';
-  if (cls.includes('human') && !cls.includes('assistant')) return 'user';
-  if (cls.includes('prompt') && !cls.includes('response')) return 'user';
-  if (cls.includes('assistant') || cls.includes('ai-bubble') || cls.includes('bot-')) return 'assistant';
-  if (cls.includes('response') || cls.includes('ai-')) return 'assistant';
-
-  // 3. 检查内部是否有明确的用户/AI标识元素
-  const hasUserIndicator = !!el.querySelector('[class*="user-avatar"], [class*="user-icon"], [class*="human-avatar"], [data-role="user"], [data-sender="user"], [data-sender="human"]');
-  const hasAssistantIndicator = !!el.querySelector('[class*="assistant-avatar"], [class*="ai-avatar"], [class*="bot-avatar"], [data-role="assistant"], [data-sender="assistant"], [data-sender="ai"]');
-
-  if (hasUserIndicator && !hasAssistantIndicator) return 'user';
-  if (hasAssistantIndicator && !hasUserIndicator) return 'assistant';
-
-  // 4. 检查是否有典型的AI特征
-  const hasCodeBlocks = el.querySelectorAll('pre, code').length > 0;
-  const hasLinks = el.querySelectorAll('a[href^="http"]').length > 2;
-  const hasBlockquote = el.querySelectorAll('blockquote').length > 0;
-
-  if (hasCodeBlocks || hasLinks || hasBlockquote) return 'assistant';
-
-  // 5. 检查文本特征
-  const text = el.textContent?.trim() || '';
-  const textLen = text.length;
-  const hasLineBreaks = text.includes('\n');
-
-  if (textLen > 500 && hasLineBreaks) return 'assistant';
-
-  // 6. 默认：简短、无特殊格式 → 用户
-  if (textLen < 200 && !hasCodeBlocks && !hasLinks) return 'user';
-
-  return 'assistant';
-}
-
-function deduplicateAndFixRoles(messages) {
-  // 去除重复内容
-  const seen = new Set();
-  const deduped = [];
-  messages.forEach(msg => {
-    const key = msg.contentText.slice(0, 100);
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduped.push(msg);
-    }
-  });
-
-  // 如果所有消息都是同一角色，尝试用交替模式修正
-  if (deduped.length > 1) {
-    const allSame = deduped.every(m => m.role === deduped[0].role);
-    if (allSame) {
-      deduped.forEach((msg, i) => {
-        msg.role = i % 2 === 0 ? 'user' : 'assistant';
-      });
-    }
-  }
-
-  return deduped;
-}
-
+// 辅助函数：提取时间戳
 function extractTimestamp(element) {
   const timeEl = element.querySelector('time');
   if (timeEl) {
