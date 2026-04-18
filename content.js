@@ -1,8 +1,9 @@
 // content.js - Content Script for AI Session Export Tool
+// 注入到页面中，负责数据采集和与后台脚本通信
 
-// 注入脚本到页面上下文
+// 注入脚本到页面上下文（绕过 isolated world）
 function injectScript() {
-  var script = document.createElement('script');
+  const script = document.createElement('script');
   script.src = chrome.runtime.getURL('injected.js');
   script.onload = function() {
     this.remove();
@@ -10,32 +11,36 @@ function injectScript() {
   (document.head || document.documentElement).appendChild(script);
 }
 
+// 立即注入
 injectScript();
 
 // 监听来自 injected.js 的消息
-window.addEventListener('AIExportData', function(event) {
-  console.log('[AI Export] Received data from page:', event.detail && event.detail.type);
+window.addEventListener('AIExportData', (event) => {
+  console.log('[AI Export] Received data from page:', event.detail?.type);
 
+  // 转发给 background.js
   chrome.runtime.sendMessage({
     type: 'PAGE_DATA_CAPTURED',
     data: event.detail
-  }).catch(function(err) {
+  }).catch(err => {
     console.warn('[AI Export] Failed to send message to background:', err);
   });
 });
 
 // 监听来自 popup 或 background 的消息
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[AI Export] Content script received:', message.type);
 
   switch (message.type) {
     case 'EXPORT_CURRENT_CONVERSATION':
+      // 导出当前会话
       exportCurrentConversation(message.platform)
-        .then(function(data) { sendResponse(data); })
-        .catch(function(err) { sendResponse({ error: err.message }); });
+        .then(data => sendResponse(data))
+        .catch(err => sendResponse({ error: err.message }));
       return true;
 
     case 'GET_PAGE_INFO':
+      // 获取页面信息
       sendResponse(getPageInfo());
       return true;
 
@@ -46,23 +51,28 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
 
 // 获取页面信息
 function getPageInfo() {
-  var url = window.location.href;
-  var platform = 'unknown';
+  const url = window.location.href;
+  let platform = 'unknown';
 
-  if (url.indexOf('chatgpt.com') !== -1 || url.indexOf('chat.openai.com') !== -1) {
+  if (url.includes('chatgpt.com') || url.includes('chat.openai.com')) {
     platform = 'chatgpt';
-  } else if (url.indexOf('claude.ai') !== -1 || url.indexOf('anthropic.com') !== -1) {
+  } else if (url.includes('claude.ai') || url.includes('anthropic.com')) {
     platform = 'claude';
   }
 
-  return { url: url, platform: platform, title: document.title };
+  return {
+    url: url,
+    platform: platform,
+    title: document.title,
+  };
 }
 
 // 导出当前会话的主入口函数
 async function exportCurrentConversation(platform) {
-  var pageInfo = getPageInfo();
-  var data;
+  const pageInfo = getPageInfo();
+  let data;
 
+  // 根据平台选择提取策略
   switch (platform) {
     case 'chatgpt':
       data = await extractChatGPTData();
@@ -71,41 +81,45 @@ async function exportCurrentConversation(platform) {
       data = await extractClaudeData();
       break;
     default:
+      // 尝试通用 DOM 提取
       data = await extractDataFromDOM();
   }
 
-  if (!data || !data.messages || data.messages.length === 0) {
+  // 如果没有提取到数据，使用兜底方案
+  if (!data || !data.messages?.length) {
     console.warn('[AI Export] Platform-specific extraction failed, using DOM fallback');
     data = await extractDataFromDOM();
   }
 
-  return Object.assign({
+  // 合并信息
+  return {
     platform: pageInfo.platform,
     url: pageInfo.url,
-    title: extractTitleFromPage()
-  }, data, {
+    title: extractTitleFromPage(),
+    ...data,
     exportedAt: new Date().toISOString()
-  });
+  };
 }
 
-// ========== ChatGPT 提取 ==========
+// 从 ChatGPT 页面提取数据
 async function extractChatGPTData() {
   console.log('[AI Export] Extracting ChatGPT data...');
 
-  await waitForElement('[data-message-author-role]', 3000).catch(function() {});
+  // 等待页面加载
+  await waitForElement('[data-message-author-role]', 3000).catch(() => {});
 
-  var messages = [];
-  var messageElements = document.querySelectorAll('[data-message-author-role]');
+  const messages = [];
+  const messageElements = document.querySelectorAll('[data-message-author-role]');
 
-  messageElements.forEach(function(el, index) {
+  messageElements.forEach((el, index) => {
     try {
-      var role = el.getAttribute('data-message-author-role');
-      var contentEl = el.querySelector('[data-message-content]') || el;
-      var timestamp = extractTimestamp(el);
-      var model = extractModel(el);
+      const role = el.getAttribute('data-message-author-role');
+      const contentEl = el.querySelector('[data-message-content]') || el;
+      const timestamp = extractTimestamp(el);
+      const model = extractModel(el);
 
-      messages.push({
-        id: 'msg-' + index,
+      const message = {
+        id: `msg-${index}`,
         role: role === 'user' ? 'user' : 'assistant',
         createdAt: timestamp,
         model: model,
@@ -113,35 +127,39 @@ async function extractChatGPTData() {
         contentText: contentEl.textContent,
         contentMarkdown: htmlToMarkdownSimple(contentEl.innerHTML),
         citations: extractCitations(el),
-      });
+      };
+
+      messages.push(message);
     } catch (err) {
       console.error('[AI Export] Failed to extract message:', err);
     }
   });
 
-  var globalData = window.__CHATGPT_DATA__ || {};
+  // 尝试从全局对象获取更多数据
+  const globalData = window.__CHATGPT_DATA__ || {};
 
   return {
     messages: messages,
     model: globalData.model,
     createTime: globalData.createTime,
-    meta: globalData
+    meta: globalData,
   };
 }
 
+// 从 Claude 页面提取数据
 // ========== Claude 提取 ==========
 async function extractClaudeData() {
   console.log('[AI Export] Extracting Claude data...');
 
   // 优先：使用 API 拦截数据（由 injected.js 捕获）
-  var apiData = window.__AI_EXPORT__ ? window.__AI_EXPORT__.getData() : null;
-  if (apiData && apiData.messages && apiData.messages.length > 0) {
+  const apiData = window.__AI_EXPORT__?.getData?.();
+  if (apiData?.messages?.length > 0) {
     console.log('[AI Export] Using API-intercepted data:', apiData.messages.length, 'messages');
     return {
       messages: apiData.messages,
-      model: apiData.metadata && apiData.metadata.model,
-      createTime: apiData.metadata && apiData.metadata.createTime,
-      meta: apiData.metadata || {}
+      model: apiData.metadata?.model,
+      createTime: apiData.metadata?.createTime,
+      meta: apiData.metadata || {},
     };
   }
 
@@ -154,33 +172,29 @@ async function extractClaudeDataFromDOM() {
   console.log('[AI Export] Extracting Claude data from DOM...');
 
   // 等待页面加载完成
-  await waitForElement('[data-testid="user-message"], .font-claude-response', 5000).catch(function() {});
+  await waitForElement('[data-testid="user-message"], .font-claude-response', 5000).catch(() => {});
 
   // 收集所有消息元素
-  var allElements = [];
+  const allElements = [];
 
   // 用户消息
-  var userElements = document.querySelectorAll('[data-testid="user-message"]');
-  userElements.forEach(function(el) {
-    allElements.push({ el: el, type: 'user' });
+  document.querySelectorAll('[data-testid="user-message"]').forEach(el => {
+    allElements.push({ el, type: 'user' });
   });
 
   // AI 消息
-  var assistantElements = document.querySelectorAll('.font-claude-response');
-  assistantElements.forEach(function(el) {
-    allElements.push({ el: el, type: 'assistant' });
+  document.querySelectorAll('.font-claude-response').forEach(el => {
+    allElements.push({ el, type: 'assistant' });
   });
 
   // 按文档顺序排序
-  allElements = sortByDocumentOrder(allElements.map(function(item) { return item.el; }))
-    .map(function(el) {
-      return allElements.find(function(item) { return item.el === el; });
-    });
+  const sortedElements = sortByDocumentOrder(allElements.map(item => item.el))
+    .map(el => allElements.find(item => item.el === el));
 
-  var messages = [];
-  allElements.forEach(function(item, index) {
+  const messages = [];
+  sortedElements.forEach((item, index) => {
     try {
-      var msg = extractClaudeMessageFromElement(item.el, item.type, index);
+      const msg = extractClaudeMessageFromElement(item.el, item.type, index);
       if (msg) messages.push(msg);
     } catch (err) {
       console.error('[AI Export] Failed to extract Claude message:', err);
@@ -190,125 +204,93 @@ async function extractClaudeDataFromDOM() {
   // 如果 DOM 提取也没找到，尝试通用兜底
   if (messages.length === 0) {
     console.warn('[AI Export] No messages found with known selectors, trying generic extraction');
-    messages = extractClaudeMessagesGeneric();
+    messages.push(...extractClaudeMessagesGeneric());
   }
 
-  return { messages: messages };
+  return { messages };
 }
 
-// 按文档顺序排序元素
 function sortByDocumentOrder(elements) {
-  return Array.from(elements).sort(function(a, b) {
-    var pos = a.compareDocumentPosition(b);
+  return [...elements].sort((a, b) => {
+    const pos = a.compareDocumentPosition(b);
     if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
     if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
     return 0;
   });
 }
 
-// 从单个元素提取 Claude 消息
 function extractClaudeMessageFromElement(el, type, index) {
-  var message = {
-    id: 'msg-' + index,
-    role: type === 'user' ? 'user' : 'assistant'
+  const message = {
+    id: `msg-${index}`,
+    role: type === 'user' ? 'user' : 'assistant',
   };
 
   if (type === 'user') {
-    // 用户消息：直接从 [data-testid="user-message"] 提取
-    var contentText = el.textContent ? el.textContent.trim() : '';
+    const contentText = el.textContent?.trim() || '';
     message.contentText = contentText;
     message.contentHtml = el.innerHTML;
     message.contentMarkdown = htmlToMarkdownSimple(el.innerHTML);
 
     // 文件附件
-    var attachments = [];
-    var fileThumbnails = el.querySelectorAll('[data-testid="file-thumbnail"]');
-    fileThumbnails.forEach(function(ft) {
+    const attachments = [];
+    el.querySelectorAll('[data-testid="file-thumbnail"]').forEach(ft => {
       attachments.push({
-        name: ft.textContent ? ft.textContent.trim() : (ft.getAttribute('data-file-name') || 'attachment')
+        name: ft.textContent?.trim() || ft.getAttribute('data-file-name') || 'attachment',
       });
     });
     if (attachments.length > 0) message.attachments = attachments;
-
   } else {
-    // AI 消息：从 .font-claude-response 提取
-    var proseEl = el.querySelector('div[class*="prose"]') || el;
-
+    const proseEl = el.querySelector('div[class*="prose"]') || el;
     message.contentHtml = proseEl.innerHTML;
-    message.contentText = proseEl.textContent ? proseEl.textContent.trim() : '';
+    message.contentText = proseEl.textContent?.trim() || '';
     message.contentMarkdown = htmlToMarkdownSimple(proseEl.innerHTML);
 
     // 提取思考过程
-    var turnContainer = el.closest('[data-test-render-count]') || el.parentElement;
+    const turnContainer = el.closest('[data-test-render-count]') || el.parentElement;
     if (turnContainer) {
-      var thinkingSelectors = [
-        '[class*="thinking"]',
-        '[class*="reasoning"]',
-        'details'
-      ];
-      for (var i = 0; i < thinkingSelectors.length; i++) {
-        var thinkingEl = turnContainer.querySelector(thinkingSelectors[i]);
-        if (thinkingEl) {
-          // 如果是 <details> 元素，获取展开后的内容
-          if (thinkingEl.tagName.toLowerCase() === 'details') {
-            // 获取 <details> 中除了 <summary> 之外的的内容
-            var summary = thinkingEl.querySelector('summary');
-            var detailsContent = thinkingEl.innerHTML;
-            if (summary) {
-              // 移除 summary 内容
-              detailsContent = thinkingEl.innerHTML.replace(summary.outerHTML, '');
-            }
-            var tempDiv = document.createElement('div');
-            tempDiv.innerHTML = detailsContent;
-            message.reasoning_summary = tempDiv.textContent ? tempDiv.textContent.trim() : null;
-          } else {
-            message.reasoning_summary = thinkingEl.textContent ? thinkingEl.textContent.trim() : null;
-          }
-          break;
+      const thinkingEl = turnContainer.querySelector('[class*="thinking"], [class*="reasoning"], details');
+      if (thinkingEl) {
+        if (thinkingEl.tagName.toLowerCase() === 'details') {
+          const summary = thinkingEl.querySelector('summary');
+          const detailsContent = summary ? thinkingEl.innerHTML.replace(summary.outerHTML, '') : thinkingEl.innerHTML;
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = detailsContent;
+          message.reasoning_summary = tempDiv.textContent?.trim() || null;
+        } else {
+          message.reasoning_summary = thinkingEl.textContent?.trim() || null;
         }
       }
     }
 
-    // 提取引用
     message.citations = extractCitations(el);
   }
 
   return message;
 }
 
-// 通用 Claude 消息提取（兜底）
 function extractClaudeMessagesGeneric() {
-  var messages = [];
-
-  // 尝试在 [role="main"] 中找消息
-  var mainEl = document.querySelector('[role="main"]');
+  const messages = [];
+  const mainEl = document.querySelector('[role="main"]');
   if (!mainEl) return messages;
 
-  // 找所有段落，用启发式判断角色
-  var allBlocks = mainEl.querySelectorAll('p, div[class*="prose"], [class*="message"], [class*="response"]');
-  var lastRole = null;
+  const allBlocks = mainEl.querySelectorAll('p, div[class*="prose"], [class*="message"], [class*="response"]');
+  let lastRole = null;
 
-  allBlocks.forEach(function(el, index) {
-    var text = el.textContent ? el.textContent.trim() : '';
+  allBlocks.forEach((el, index) => {
+    const text = el.textContent?.trim() || '';
     if (text.length < 10) return;
 
-    // 判断角色：如果有反馈按钮则是 AI 消息
-    var hasFeedback = !!el.closest('article, div')?.querySelector('button[aria-label*="feedback"]');
-    var role = hasFeedback ? 'assistant' : (lastRole === 'assistant' ? 'user' : 'user');
-
-    // 交替模式：如果连续两个相同角色，重新判断
-    if (role === lastRole) {
-      role = role === 'user' ? 'assistant' : 'user';
-    }
+    const hasFeedback = !!el.closest('article, div')?.querySelector('button[aria-label*="feedback"]');
+    let role = hasFeedback ? 'assistant' : (lastRole === 'assistant' ? 'user' : 'user');
+    if (role === lastRole) role = role === 'user' ? 'assistant' : 'user';
 
     messages.push({
-      id: 'msg-' + index,
-      role: role,
+      id: `msg-${index}`,
+      role,
       contentText: text,
       contentHtml: el.innerHTML,
-      contentMarkdown: htmlToMarkdownSimple(el.innerHTML)
+      contentMarkdown: htmlToMarkdownSimple(el.innerHTML),
     });
-
     lastRole = role;
   });
 
@@ -319,66 +301,200 @@ function extractClaudeMessagesGeneric() {
 async function extractDataFromDOM() {
   console.log('[AI Export] Using DOM fallback extraction...');
 
-  var messages = [];
-  var containers = document.querySelectorAll('[class*="message"], [class*="conversation"], [class*="chat"], article, section');
+  const messages = [];
 
-  containers.forEach(function(container, index) {
-    // 跳过嵌套的消息
-    if (container.parentElement && container.parentElement.closest('[class*="message"]')) {
-      return;
+  // 策略：直接找消息级别的最小单元，而非外层容器
+  const allElements = document.querySelectorAll(
+    'article, [role="article"], [class*="message"], [class*="prompt"], ' +
+    '[class*="response"], [class*="assistant"], [class*="human"], ' +
+    '[class*="user-bubble"], [class*="ai-bubble"], [class*="chat-message"], ' +
+    '[data-role], [data-sender]'
+  );
+
+  // 去重：只保留最深层的消息元素
+  const leafMessages = [];
+  allElements.forEach(el => {
+    let hasNested = false;
+    el.querySelectorAll('article, [role="article"], [class*="message"], [class*="prompt"], [class*="response"], [class*="assistant"], [class*="human"]').forEach(nested => {
+      if (nested !== el) hasNested = true;
+    });
+    if (!hasNested) leafMessages.push(el);
+  });
+
+  const elementsToProcess = leafMessages.length > 0 ? leafMessages : Array.from(allElements);
+
+  // 去重
+  const uniqueElements = [];
+  const seen = new Set();
+  elementsToProcess.forEach(el => {
+    if (!seen.has(el)) {
+      seen.add(el);
+      uniqueElements.push(el);
     }
+  });
 
+  // 按文档顺序排序
+  uniqueElements.sort((a, b) => {
+    const pos = a.compareDocumentPosition(b);
+    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  });
+
+  uniqueElements.forEach((container, index) => {
     try {
-      var text = container.textContent ? container.textContent.trim() : '';
+      const text = container.textContent?.trim() || '';
       if (!text || text.length < 10) return;
 
-      var isUser = container.classList.contains('user') ||
-                   container.classList.contains('user-message') ||
-                   container.querySelector('[class*="user"]') !== null;
+      // 跳过导航、侧边栏等区域
+      if (isNonMessageArea(container)) return;
+
+      const role = detectMessageRole(container);
 
       messages.push({
-        id: 'msg-' + index,
-        role: isUser ? 'user' : 'assistant',
+        id: `msg-${index}`,
+        role,
         contentText: text,
         contentHtml: container.innerHTML,
-        contentMarkdown: htmlToMarkdownSimple(container.innerHTML)
+        contentMarkdown: htmlToMarkdownSimple(container.innerHTML),
+        citations: extractCitations(container),
       });
     } catch (err) {
       console.error('[AI Export] Failed to extract from container:', err);
     }
   });
 
-  return { messages: messages };
+  // 去重和角色修正
+  if (messages.length > 0) {
+    return { messages: deduplicateAndFixRoles(messages) };
+  }
+
+  return { messages };
 }
 
-// ========== 辅助函数 ==========
+function isNonMessageArea(el) {
+  let parent = el.parentElement;
+  while (parent) {
+    const tag = parent.tagName.toLowerCase();
+    const cls = parent.className || '';
+    if (tag === 'nav' || tag === 'header' || tag === 'footer') return true;
+    if (typeof cls === 'string') {
+      const clsLower = cls.toLowerCase();
+      if (clsLower.includes('sidebar') || clsLower.includes('navigation') ||
+          clsLower.includes('menu') || clsLower.includes('toolbar')) return true;
+    }
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
+function detectMessageRole(el) {
+  // 1. 检查 data 属性
+  const dataRole = el.getAttribute('data-role');
+  const dataSender = el.getAttribute('data-sender');
+  if (dataRole) {
+    const r = dataRole.toLowerCase();
+    if (r.includes('user') || r.includes('human')) return 'user';
+    if (r.includes('assistant') || r.includes('ai') || r.includes('bot')) return 'assistant';
+  }
+  if (dataSender) {
+    const s = dataSender.toLowerCase();
+    if (s === 'human' || s === 'user') return 'user';
+    if (s === 'assistant' || s === 'ai' || s === 'bot') return 'assistant';
+  }
+
+  // 2. 检查 class
+  const cls = (el.className || '').toLowerCase();
+  if (cls.includes('user') && !cls.includes('assistant')) return 'user';
+  if (cls.includes('human') && !cls.includes('assistant')) return 'user';
+  if (cls.includes('prompt') && !cls.includes('response')) return 'user';
+  if (cls.includes('assistant') || cls.includes('ai-bubble') || cls.includes('bot-')) return 'assistant';
+  if (cls.includes('response') || cls.includes('ai-')) return 'assistant';
+
+  // 3. 检查内部是否有明确的用户/AI标识元素
+  const hasUserIndicator = !!el.querySelector('[class*="user-avatar"], [class*="user-icon"], [class*="human-avatar"], [data-role="user"], [data-sender="user"], [data-sender="human"]');
+  const hasAssistantIndicator = !!el.querySelector('[class*="assistant-avatar"], [class*="ai-avatar"], [class*="bot-avatar"], [data-role="assistant"], [data-sender="assistant"], [data-sender="ai"]');
+
+  if (hasUserIndicator && !hasAssistantIndicator) return 'user';
+  if (hasAssistantIndicator && !hasUserIndicator) return 'assistant';
+
+  // 4. 检查是否有典型的AI特征
+  const hasCodeBlocks = el.querySelectorAll('pre, code').length > 0;
+  const hasLinks = el.querySelectorAll('a[href^="http"]').length > 2;
+  const hasBlockquote = el.querySelectorAll('blockquote').length > 0;
+
+  if (hasCodeBlocks || hasLinks || hasBlockquote) return 'assistant';
+
+  // 5. 检查文本特征
+  const text = el.textContent?.trim() || '';
+  const textLen = text.length;
+  const hasLineBreaks = text.includes('\n');
+
+  if (textLen > 500 && hasLineBreaks) return 'assistant';
+
+  // 6. 默认：简短、无特殊格式 → 用户
+  if (textLen < 200 && !hasCodeBlocks && !hasLinks) return 'user';
+
+  return 'assistant';
+}
+
+function deduplicateAndFixRoles(messages) {
+  // 去除重复内容
+  const seen = new Set();
+  const deduped = [];
+  messages.forEach(msg => {
+    const key = msg.contentText.slice(0, 100);
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(msg);
+    }
+  });
+
+  // 如果所有消息都是同一角色，尝试用交替模式修正
+  if (deduped.length > 1) {
+    const allSame = deduped.every(m => m.role === deduped[0].role);
+    if (allSame) {
+      deduped.forEach((msg, i) => {
+        msg.role = i % 2 === 0 ? 'user' : 'assistant';
+      });
+    }
+  }
+
+  return deduped;
+}
 
 function extractTimestamp(element) {
-  var timeEl = element.querySelector('time');
+  const timeEl = element.querySelector('time');
   if (timeEl) {
     return timeEl.getAttribute('datetime') || timeEl.textContent;
   }
-  var datetime = element.getAttribute('data-timestamp') || element.getAttribute('data-created-at');
+
+  // 尝试从属性中提取
+  const datetime = element.getAttribute('data-timestamp') ||
+                   element.getAttribute('data-created-at');
   if (datetime) return datetime;
+
   return null;
 }
 
+// 辅助函数：提取模型信息
 function extractModel(element) {
-  var modelEl = element.querySelector('[class*="model"], [data-model]');
-  return modelEl ? (modelEl.getAttribute('data-model') || modelEl.textContent) : null;
+  const modelEl = element.querySelector('[class*="model"], [data-model]');
+  return modelEl?.getAttribute('data-model') || modelEl?.textContent;
 }
 
+// 辅助函数：提取引用
 function extractCitations(element) {
-  var citations = [];
-  var citationElements = element.querySelectorAll('a[href^="http"]');
+  const citations = [];
+  const citationElements = element.querySelectorAll('[class*="citation"], [class*="reference"], a[href^="http"]');
 
-  citationElements.forEach(function(cite, index) {
-    var url = cite.getAttribute('href');
-    if (url && url.indexOf('http') === 0) {
+  citationElements.forEach((cite, index) => {
+    const url = cite.getAttribute('href');
+    if (url && url.startsWith('http')) {
       citations.push({
         index: index + 1,
         url: url,
-        title: cite.getAttribute('title') || (cite.textContent ? cite.textContent.slice(0, 100) : '')
+        title: cite.getAttribute('title') || cite.textContent?.slice(0, 100),
       });
     }
   });
@@ -386,102 +502,132 @@ function extractCitations(element) {
   return citations;
 }
 
+// 辅助函数：从页面提取标题
 function extractTitleFromPage() {
-  var currentPath = window.location.pathname;
+  const currentPath = window.location.pathname;
 
-  var conversationLinkSelectors = [
-    'a[href="' + currentPath + '"]',
-    'a[href$="' + currentPath + '"]',
-    'a[aria-current="page"][href*="/c/"]',
-    'nav a[href*="/c/"][aria-current="page"]',
-    'aside a[href*="/c/"][aria-current="page"]',
-    '[data-conversation-title]'
+  const conversationLinkSelectors = [
+    `a[href="${currentPath}"]`,
+    `a[href$="${currentPath}"]`,
+    `a[aria-current="page"][href*="/c/"]`,
+    `nav a[href*="/c/"][aria-current="page"]`,
+    `aside a[href*="/c/"][aria-current="page"]`,
+    `a[data-testid*="conversation"][href*="/c/"]`,
+    `[data-conversation-title]`,
   ];
 
-  for (var i = 0; i < conversationLinkSelectors.length; i++) {
-    var el = document.querySelector(conversationLinkSelectors[i]);
-    var text = el && el.textContent ? el.textContent.trim() : '';
+  for (const selector of conversationLinkSelectors) {
+    const el = document.querySelector(selector);
+    const text = normalizeInlineText(el?.textContent || '');
     if (text && text.toLowerCase() !== 'chatgpt') {
       return text;
     }
   }
 
-  if (document.title) {
-    var parts = document.title.split(/\s+-\s+/);
-    var filtered = parts.filter(function(p) { return p.trim().toLowerCase() !== 'chatgpt'; });
-    if (filtered.length > 0) return filtered[filtered.length - 1].trim();
+  const cleanedDocumentTitle = cleanConversationTitle(document.title);
+  if (cleanedDocumentTitle) {
+    return cleanedDocumentTitle;
   }
 
-  return '\u672a\u547d\u540d\u4f1a\u8bdd';
+  // 最后才兜底到页面标题元素，避免拿到正文里的 h1
+  const titleSelectors = [
+    '[data-conversation-title]',
+    'header h1',
+    '[class*="title"]',
+    'title',
+  ];
+
+  for (const selector of titleSelectors) {
+    const el = document.querySelector(selector);
+    if (el) {
+      const text = cleanConversationTitle(el.textContent?.trim() || '');
+      if (text) return text;
+    }
+  }
+
+  return '未命名会话';
 }
 
-// 简单的 HTML 转 Markdown
+// 辅助函数：简单的 HTML 转 Markdown
 function htmlToMarkdownSimple(html) {
   if (!html) return '';
 
-  var temp = document.createElement('div');
+  const temp = document.createElement('div');
   temp.innerHTML = html;
 
-  // 清理 UI 杂质
-  temp.querySelectorAll('button, svg, style, script, noscript, .sr-only, .screen-reader-only, [aria-hidden="true"]').forEach(function(el) {
+  // 清理明显的 UI 杂质和隐藏噪音，避免正文被重复拼接。
+  temp.querySelectorAll('button, svg, style, script, noscript, .sr-only, .screen-reader-only, [aria-hidden="true"]').forEach(el => {
     el.remove();
   });
 
-  var markdown = serializeBlockChildren(temp).trim();
+  const markdown = serializeBlockChildren(temp).trim();
   return normalizeMarkdown(markdown);
 }
 
-function serializeBlockChildren(root) {
-  var result = '';
-  root.childNodes.forEach(function(node) {
-    result += serializeNode(node, false);
+function serializeBlockChildren(root, indent = 0) {
+  let result = '';
+  root.childNodes.forEach(node => {
+    result += serializeNode(node, indent, false);
   });
   return result;
 }
 
-function serializeNode(node, inlineContext) {
+function serializeInlineChildren(root, indent = 0) {
+  let result = '';
+  root.childNodes.forEach(node => {
+    result += serializeNode(node, indent, true);
+  });
+  return normalizeInlineText(result);
+}
+
+function serializeNode(node, indent = 0, inlineContext = false) {
   if (node.nodeType === Node.TEXT_NODE) {
     return inlineContext ? normalizeInlineText(node.textContent || '') : (node.textContent || '');
   }
 
-  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return '';
+  }
 
-  var el = node;
-  var tag = el.tagName.toLowerCase();
+  const el = node;
+  const tag = el.tagName.toLowerCase();
 
-  // 优先处理数学公式
-  var mathMd = extractMathMarkdown(el, inlineContext);
-  if (mathMd !== null) return mathMd;
+  const mathMarkdown = extractMathMarkdown(el, inlineContext);
+  if (mathMarkdown !== null) {
+    return mathMarkdown;
+  }
 
   switch (tag) {
     case 'br':
       return inlineContext ? ' ' : '  \n';
 
     case 'pre': {
-      var codeEl = el.querySelector('code');
-      var langClass = codeEl ? codeEl.className : '';
-      var match = langClass.match(/language-([\w-]+)/);
-      var lang = match ? match[1] : '';
-      var codeText = serializePreformattedText(codeEl || el).replace(/\r/g, '').trimEnd();
-      return '\n```' + lang + '\n' + codeText + '\n```\n\n';
+      const codeEl = el.querySelector('code');
+      const langClass = codeEl?.className || '';
+      const match = langClass.match(/language-([\w-]+)/);
+      const lang = match ? match[1] : '';
+      const codeText = serializePreformattedText(codeEl || el).replace(/\r/g, '').trimEnd();
+      return `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n\n`;
     }
 
     case 'code':
-      return '`' + normalizeInlineText(getVisibleText(el)) + '`';
+      return `\`${normalizeInlineText(getVisibleText(el))}\``;
 
     case 'strong':
     case 'b':
-      return '**' + serializeInlineChildren(el) + '**';
+      return `**${serializeInlineChildren(el, indent)}**`;
 
     case 'em':
     case 'i':
-      return '*' + serializeInlineChildren(el) + '*';
+      return `*${serializeInlineChildren(el, indent)}*`;
 
     case 'a': {
-      var href = el.getAttribute('href') || '';
-      var text = normalizeInlineText(getVisibleText(el)) || href;
-      if (!href || href.indexOf('#') === 0 || href.indexOf('javascript:') === 0) return text;
-      return '[' + text + '](' + href + ')';
+      const href = el.getAttribute('href') || '';
+      const text = normalizeInlineText(getVisibleText(el)) || href;
+      if (!href || href.startsWith('#') || href.startsWith('javascript:')) {
+        return text;
+      }
+      return `[${text}](${href})`;
     }
 
     case 'h1':
@@ -490,77 +636,138 @@ function serializeNode(node, inlineContext) {
     case 'h4':
     case 'h5':
     case 'h6': {
-      var level = Number(tag[1]);
-      var title = normalizeInlineText(getVisibleText(el));
-      return '\n' + '#'.repeat(level) + ' ' + title + '\n\n';
+      const level = Number(tag[1]);
+      const title = normalizeInlineText(getVisibleText(el));
+      return `\n${'#'.repeat(level)} ${title}\n\n`;
     }
 
     case 'p': {
-      var pText = serializeInlineChildren(el);
-      return pText ? pText + '\n\n' : '';
+      const text = serializeInlineChildren(el, indent);
+      return text ? `${text}\n\n` : '';
     }
 
     case 'blockquote': {
-      var bqText = normalizeMarkdown(serializeBlockChildren(el).trim());
-      if (!bqText) return '';
-      var quoted = bqText.split('\n').map(function(line) { return line ? '> ' + line : '>'; }).join('\n');
-      return quoted + '\n\n';
+      const text = normalizeMarkdown(serializeBlockChildren(el, indent).trim());
+      if (!text) return '';
+      const quoted = text.split('\n').map(line => line ? `> ${line}` : '>').join('\n');
+      return `${quoted}\n\n`;
     }
 
     case 'ul':
-      return serializeList(el, false);
+      return serializeList(el, false, indent);
 
     case 'ol':
-      return serializeList(el, true);
+      return serializeList(el, true, indent);
 
-    case 'table': {
-      var rows = el.querySelectorAll('tr');
-      var tMd = '\n';
-      rows.forEach(function(tr, rowIndex) {
-        var cells = Array.from(tr.querySelectorAll('th, td')).map(function(cell) {
-          return (normalizeInlineText(getVisibleText(cell)).replace(/\|/g, '\\|') || ' ');
-        });
-        tMd += '| ' + cells.join(' | ') + ' |\n';
-        if (rowIndex === 0) {
-          tMd += '| ' + cells.map(function() { return '---'; }).join(' | ') + ' |\n';
-        }
-      });
-      return tMd + '\n';
-    }
+    case 'table':
+      return serializeTable(el);
 
     case 'hr':
-      return '\n---\n\n';
+      return `\n---\n\n`;
 
     case 'div':
     case 'section':
     case 'article':
     case 'main': {
-      if (hasBlockChildren(el)) return serializeBlockChildren(el);
-      var dText = serializeInlineChildren(el);
-      return dText ? dText + '\n\n' : '';
+      if (hasBlockChildren(el)) {
+        return serializeBlockChildren(el, indent);
+      }
+      const text = serializeInlineChildren(el, indent);
+      return text ? `${text}\n\n` : '';
     }
 
     case 'span':
-      return serializeInlineChildren(el);
+      return serializeInlineChildren(el, indent);
 
     default: {
-      if (hasBlockChildren(el)) return serializeBlockChildren(el);
-      return serializeInlineChildren(el);
+      if (hasBlockChildren(el)) {
+        return serializeBlockChildren(el, indent);
+      }
+      return serializeInlineChildren(el, indent);
     }
   }
 }
 
-function serializeInlineChildren(root) {
-  var result = '';
-  root.childNodes.forEach(function(node) {
-    result += serializeNode(node, true);
+function serializeList(listEl, ordered, indent = 0) {
+  const items = Array.from(listEl.children).filter(child => child.tagName?.toLowerCase() === 'li');
+  if (!items.length) return '';
+
+  let result = '';
+  items.forEach((li, index) => {
+    result += serializeListItem(li, ordered ? `${index + 1}.` : '-', indent);
   });
-  return normalizeInlineText(result);
+  return `${result}\n`;
 }
 
-function extractMathMarkdown(el, inlineContext) {
-  var tag = el.tagName.toLowerCase();
-  var className = typeof el.className === 'string' ? el.className : '';
+function serializeListItem(li, marker, indent = 0) {
+  let inlineParts = '';
+  let nestedParts = '';
+
+  li.childNodes.forEach(child => {
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const tag = child.tagName.toLowerCase();
+      if (tag === 'ul' || tag === 'ol') {
+        nestedParts += serializeList(child, tag === 'ol', indent + 1);
+        return;
+      }
+      if (tag === 'p') {
+        const text = serializeInlineChildren(child, indent).trim();
+        if (text) inlineParts += (inlineParts ? ' ' : '') + text;
+        return;
+      }
+      if (tag === 'pre') {
+        nestedParts += serializeNode(child, indent + 1, false);
+        return;
+      }
+    }
+
+    const fragment = serializeNode(child, indent + 1, true).trim();
+    if (fragment) {
+      inlineParts += (inlineParts ? ' ' : '') + fragment;
+    }
+  });
+
+  const indentStr = '  '.repeat(indent);
+  let result = '';
+
+  if (inlineParts) {
+    result += `${indentStr}${marker} ${inlineParts}\n`;
+  }
+
+  if (nestedParts) {
+    result += nestedParts;
+  }
+
+  return result;
+}
+
+function serializeTable(tableEl) {
+  const rows = Array.from(tableEl.querySelectorAll('tr'));
+  if (!rows.length) return '';
+
+  let markdown = '\n';
+  rows.forEach((tr, rowIndex) => {
+    const cells = Array.from(tr.querySelectorAll('th, td')).map(cell => {
+      return normalizeInlineText(getVisibleText(cell)).replace(/\|/g, '\\|') || ' ';
+    });
+    markdown += `| ${cells.join(' | ')} |\n`;
+    if (rowIndex === 0) {
+      markdown += `| ${cells.map(() => '---').join(' | ')} |\n`;
+    }
+  });
+
+  return `${markdown}\n`;
+}
+
+function hasBlockChildren(el) {
+  return Array.from(el.children).some(child => {
+    return /^(div|section|article|main|p|pre|blockquote|ul|ol|table|h[1-6]|hr)$/i.test(child.tagName);
+  });
+}
+
+function extractMathMarkdown(el, inlineContext = false) {
+  const tag = el.tagName.toLowerCase();
+  const className = typeof el.className === 'string' ? el.className : '';
 
   if (tag === 'annotation' || tag === 'annotation-xml' || tag === 'semantics') {
     return '';
@@ -570,7 +777,7 @@ function extractMathMarkdown(el, inlineContext) {
     return '';
   }
 
-  var isMathContainer =
+  const isMathContainer =
     tag === 'math' ||
     tag === 'mjx-container' ||
     /(?:^|\s)(katex|katex-display|katex-mathml|math-display|math-inline)(?:\s|$)/i.test(className) ||
@@ -585,7 +792,7 @@ function extractMathMarkdown(el, inlineContext) {
     return null;
   }
 
-  var latex =
+  const latex =
     el.getAttribute('data-tex') ||
     el.getAttribute('data-latex') ||
     el.getAttribute('aria-label') ||
@@ -597,14 +804,14 @@ function extractMathMarkdown(el, inlineContext) {
     el.querySelector('annotation')?.textContent ||
     '';
 
-  var cleanLatex = latex.replace(/\s+/g, ' ').trim();
+  const cleanLatex = latex.replace(/\s+/g, ' ').trim();
   if (!cleanLatex) {
-    var fallbackText = normalizeInlineText(getVisibleText(el));
+    const fallbackText = normalizeInlineText(getVisibleText(el));
     if (!fallbackText) return '';
-    return inlineContext ? '$' + fallbackText + '$' : '\n$$\n' + fallbackText + '\n$$\n\n';
+    return inlineContext ? `$${fallbackText}$` : `\n$$\n${fallbackText}\n$$\n\n`;
   }
 
-  var isBlockMath =
+  const isBlockMath =
     !inlineContext ||
     tag === 'mjx-container' ||
     el.classList.contains('katex-display') ||
@@ -613,89 +820,47 @@ function extractMathMarkdown(el, inlineContext) {
     getVisibleText(el).includes('\n');
 
   if (isBlockMath) {
-    return '\n$$\n' + cleanLatex + '\n$$\n\n';
+    return `\n$$\n${cleanLatex}\n$$\n\n`;
   }
 
-  return '$' + cleanLatex + '$';
-}
-
-function serializeList(listEl, ordered) {
-  var items = Array.from(listEl.children).filter(function(child) { return child.tagName && child.tagName.toLowerCase() === 'li'; });
-  if (!items.length) return '';
-
-  var result = '';
-  items.forEach(function(li, index) {
-    result += serializeListItem(li, ordered ? (index + 1) + '.' : '-');
-  });
-  return result + '\n';
-}
-
-function serializeListItem(li, marker) {
-  var inlineParts = '';
-  var nestedParts = '';
-
-  li.childNodes.forEach(function(child) {
-    if (child.nodeType === Node.ELEMENT_NODE) {
-      var tag = child.tagName.toLowerCase();
-      if (tag === 'ul' || tag === 'ol') {
-        nestedParts += serializeList(child, tag === 'ol');
-        return;
-      }
-      if (tag === 'p') {
-        var text = serializeInlineChildren(child).trim();
-        if (text) inlineParts += (inlineParts ? ' ' : '') + text;
-        return;
-      }
-      if (tag === 'pre') {
-        nestedParts += serializeNode(child, false);
-        return;
-      }
-    }
-
-    var fragment = serializeNode(child, true).trim();
-    if (fragment) {
-      inlineParts += (inlineParts ? ' ' : '') + fragment;
-    }
-  });
-
-  var result = '';
-  if (inlineParts) {
-    result += marker + ' ' + inlineParts + '\n';
-  }
-  if (nestedParts) {
-    result += nestedParts;
-  }
-  return result;
+  return `$${cleanLatex}$`;
 }
 
 function serializePreformattedText(root) {
-  var parts = [];
+  const parts = [];
 
   function walk(node) {
     if (node.nodeType === Node.TEXT_NODE) {
       parts.push(node.textContent || '');
       return;
     }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-    var el = node;
-    var tag = el.tagName.toLowerCase();
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+
+    const el = node;
+    const tag = el.tagName.toLowerCase();
+
     if (tag === 'br') {
       parts.push('\n');
       return;
     }
 
-    var children = Array.from(el.childNodes);
-    children.forEach(function(child, index) {
+    const children = Array.from(el.childNodes);
+    children.forEach((child, index) => {
       walk(child);
+
       if (child.nodeType === Node.ELEMENT_NODE) {
-        var childEl = child;
-        var childTag = childEl.tagName.toLowerCase();
-        var shouldBreak = /^(div|p|li|tr)$/.test(childTag) ||
+        const childEl = child;
+        const childTag = childEl.tagName.toLowerCase();
+        const shouldBreakLine =
+          /^(div|p|li|tr)$/.test(childTag) ||
           /(line|code-line)/i.test(childEl.className || '') ||
           childEl.getAttribute('data-line') !== null;
-        if (shouldBreak && index < children.length - 1) {
-          if (!parts[parts.length - 1] || !parts[parts.length - 1].endsWith('\n')) {
+
+        if (shouldBreakLine && index < children.length - 1) {
+          if (!parts[parts.length - 1]?.endsWith('\n')) {
             parts.push('\n');
           }
         }
@@ -704,39 +869,58 @@ function serializePreformattedText(root) {
   }
 
   walk(root);
-  return parts.join('').replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n');
-}
 
-function hasBlockChildren(el) {
-  return Array.from(el.children).some(function(child) {
-    return /^(div|section|article|main|p|pre|blockquote|ul|ol|table|h[1-6]|hr)$/i.test(child.tagName);
-  });
+  return parts.join('')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 function getVisibleText(el) {
-  var text = typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
+  const text = typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
   return text.replace(/\u00a0/g, ' ');
 }
 
 function normalizeInlineText(text) {
-  return text.replace(/\s+/g, ' ').replace(/\s+([,.;:!?])/g, '$1').trim();
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim();
 }
 
 function normalizeMarkdown(text) {
-  return text.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return text
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
-function waitForElement(selector, timeout) {
-  if (timeout === undefined) timeout = 5000;
-  return new Promise(function(resolve, reject) {
-    var element = document.querySelector(selector);
+function cleanConversationTitle(rawTitle) {
+  if (!rawTitle) return '';
+
+  const normalized = rawTitle.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+
+  const parts = normalized.split(/\s+-\s+/).map(part => part.trim()).filter(Boolean);
+  const filtered = parts.filter(part => !/^chatgpt$/i.test(part));
+  if (filtered.length === 0) {
+    return normalized === 'ChatGPT' ? '' : normalized;
+  }
+
+  return filtered[filtered.length - 1];
+}
+
+// 辅助函数：等待元素出现
+function waitForElement(selector, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    const element = document.querySelector(selector);
     if (element) {
       resolve(element);
       return;
     }
 
-    var observer = new MutationObserver(function() {
-      var element = document.querySelector(selector);
+    const observer = new MutationObserver(() => {
+      const element = document.querySelector(selector);
       if (element) {
         observer.disconnect();
         resolve(element);
@@ -745,9 +929,9 @@ function waitForElement(selector, timeout) {
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    setTimeout(function() {
+    setTimeout(() => {
       observer.disconnect();
-      reject(new Error('Timeout waiting for ' + selector));
+      reject(new Error(`Timeout waiting for ${selector}`));
     }, timeout);
   });
 }
