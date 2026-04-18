@@ -1,9 +1,8 @@
 // content.js - Content Script for AI Session Export Tool
-// 注入到页面中，负责数据采集和与后台脚本通信
 
-// 注入脚本到页面上下文（绕过 isolated world）
+// 注入脚本到页面上下文
 function injectScript() {
-  const script = document.createElement('script');
+  var script = document.createElement('script');
   script.src = chrome.runtime.getURL('injected.js');
   script.onload = function() {
     this.remove();
@@ -11,36 +10,32 @@ function injectScript() {
   (document.head || document.documentElement).appendChild(script);
 }
 
-// 立即注入
 injectScript();
 
 // 监听来自 injected.js 的消息
-window.addEventListener('AIExportData', (event) => {
-  console.log('[AI Export] Received data from page:', event.detail?.type);
+window.addEventListener('AIExportData', function(event) {
+  console.log('[AI Export] Received data from page:', event.detail && event.detail.type);
 
-  // 转发给 background.js
   chrome.runtime.sendMessage({
     type: 'PAGE_DATA_CAPTURED',
     data: event.detail
-  }).catch(err => {
+  }).catch(function(err) {
     console.warn('[AI Export] Failed to send message to background:', err);
   });
 });
 
 // 监听来自 popup 或 background 的消息
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log('[AI Export] Content script received:', message.type);
 
   switch (message.type) {
     case 'EXPORT_CURRENT_CONVERSATION':
-      // 导出当前会话
       exportCurrentConversation(message.platform)
-        .then(data => sendResponse(data))
-        .catch(err => sendResponse({ error: err.message }));
+        .then(function(data) { sendResponse(data); })
+        .catch(function(err) { sendResponse({ error: err.message }); });
       return true;
 
     case 'GET_PAGE_INFO':
-      // 获取页面信息
       sendResponse(getPageInfo());
       return true;
 
@@ -51,28 +46,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // 获取页面信息
 function getPageInfo() {
-  const url = window.location.href;
-  let platform = 'unknown';
+  var url = window.location.href;
+  var platform = 'unknown';
 
-  if (url.includes('chatgpt.com') || url.includes('chat.openai.com')) {
+  if (url.indexOf('chatgpt.com') !== -1 || url.indexOf('chat.openai.com') !== -1) {
     platform = 'chatgpt';
-  } else if (url.includes('claude.ai') || url.includes('anthropic.com')) {
+  } else if (url.indexOf('claude.ai') !== -1 || url.indexOf('anthropic.com') !== -1) {
     platform = 'claude';
   }
 
-  return {
-    url: url,
-    platform: platform,
-    title: document.title,
-  };
+  return { url: url, platform: platform, title: document.title };
 }
 
 // 导出当前会话的主入口函数
 async function exportCurrentConversation(platform) {
-  const pageInfo = getPageInfo();
-  let data;
+  var pageInfo = getPageInfo();
+  var data;
 
-  // 根据平台选择提取策略
   switch (platform) {
     case 'chatgpt':
       data = await extractChatGPTData();
@@ -81,45 +71,41 @@ async function exportCurrentConversation(platform) {
       data = await extractClaudeData();
       break;
     default:
-      // 尝试通用 DOM 提取
       data = await extractDataFromDOM();
   }
 
-  // 如果没有提取到数据，使用兜底方案
-  if (!data || !data.messages?.length) {
+  if (!data || !data.messages || data.messages.length === 0) {
     console.warn('[AI Export] Platform-specific extraction failed, using DOM fallback');
     data = await extractDataFromDOM();
   }
 
-  // 合并信息
-  return {
+  return Object.assign({
     platform: pageInfo.platform,
     url: pageInfo.url,
-    title: extractTitleFromPage(),
-    ...data,
+    title: extractTitleFromPage()
+  }, data, {
     exportedAt: new Date().toISOString()
-  };
+  });
 }
 
-// 从 ChatGPT 页面提取数据
+// ========== ChatGPT 提取 ==========
 async function extractChatGPTData() {
   console.log('[AI Export] Extracting ChatGPT data...');
 
-  // 等待页面加载
-  await waitForElement('[data-message-author-role]', 3000).catch(() => {});
+  await waitForElement('[data-message-author-role]', 3000).catch(function() {});
 
-  const messages = [];
-  const messageElements = document.querySelectorAll('[data-message-author-role]');
+  var messages = [];
+  var messageElements = document.querySelectorAll('[data-message-author-role]');
 
-  messageElements.forEach((el, index) => {
+  messageElements.forEach(function(el, index) {
     try {
-      const role = el.getAttribute('data-message-author-role');
-      const contentEl = el.querySelector('[data-message-content]') || el;
-      const timestamp = extractTimestamp(el);
-      const model = extractModel(el);
+      var role = el.getAttribute('data-message-author-role');
+      var contentEl = el.querySelector('[data-message-content]') || el;
+      var timestamp = extractTimestamp(el);
+      var model = extractModel(el);
 
-      const message = {
-        id: `msg-${index}`,
+      messages.push({
+        id: 'msg-' + index,
         role: role === 'user' ? 'user' : 'assistant',
         createdAt: timestamp,
         model: model,
@@ -127,144 +113,272 @@ async function extractChatGPTData() {
         contentText: contentEl.textContent,
         contentMarkdown: htmlToMarkdownSimple(contentEl.innerHTML),
         citations: extractCitations(el),
-      };
-
-      messages.push(message);
+      });
     } catch (err) {
       console.error('[AI Export] Failed to extract message:', err);
     }
   });
 
-  // 尝试从全局对象获取更多数据
-  const globalData = window.__CHATGPT_DATA__ || {};
+  var globalData = window.__CHATGPT_DATA__ || {};
 
   return {
     messages: messages,
     model: globalData.model,
     createTime: globalData.createTime,
-    meta: globalData,
+    meta: globalData
   };
 }
 
-// 从 Claude 页面提取数据
+// ========== Claude 提取 ==========
 async function extractClaudeData() {
   console.log('[AI Export] Extracting Claude data...');
 
-  // 等待页面加载
-  await waitForElement('.message', 3000).catch(() => {});
+  // 优先：使用 API 拦截数据（由 injected.js 捕获）
+  var apiData = window.__AI_EXPORT__ ? window.__AI_EXPORT__.getData() : null;
+  if (apiData && apiData.messages && apiData.messages.length > 0) {
+    console.log('[AI Export] Using API-intercepted data:', apiData.messages.length, 'messages');
+    return {
+      messages: apiData.messages,
+      model: apiData.metadata && apiData.metadata.model,
+      createTime: apiData.metadata && apiData.metadata.createTime,
+      meta: apiData.metadata || {}
+    };
+  }
 
-  const messages = [];
-  const messageElements = document.querySelectorAll('.message, [data-message-id]');
+  // 兜底：DOM 提取
+  console.log('[AI Export] No API data available, falling back to DOM extraction');
+  return extractClaudeDataFromDOM();
+}
 
-  messageElements.forEach((el, index) => {
+async function extractClaudeDataFromDOM() {
+  console.log('[AI Export] Extracting Claude data from DOM...');
+
+  // 等待页面加载完成
+  await waitForElement('[data-testid="user-message"], .font-claude-response', 5000).catch(function() {});
+
+  // 收集所有消息元素
+  var allElements = [];
+
+  // 用户消息
+  var userElements = document.querySelectorAll('[data-testid="user-message"]');
+  userElements.forEach(function(el) {
+    allElements.push({ el: el, type: 'user' });
+  });
+
+  // AI 消息
+  var assistantElements = document.querySelectorAll('.font-claude-response');
+  assistantElements.forEach(function(el) {
+    allElements.push({ el: el, type: 'assistant' });
+  });
+
+  // 按文档顺序排序
+  allElements = sortByDocumentOrder(allElements.map(function(item) { return item.el; }))
+    .map(function(el) {
+      return allElements.find(function(item) { return item.el === el; });
+    });
+
+  var messages = [];
+  allElements.forEach(function(item, index) {
     try {
-      const isUser = el.classList.contains('user-message') ||
-                     el.querySelector('.user-content') ||
-                     !el.querySelector('.assistant-content');
-
-      const contentEl = el.querySelector('.content, .message-content') || el;
-      const timestamp = extractTimestamp(el);
-
-      // 提取思考过程（如果有）
-      const reasoningEl = el.querySelector('.reasoning-content, .thinking-content');
-      const reasoning = reasoningEl ? reasoningEl.textContent : null;
-
-      const message = {
-        id: `msg-${index}`,
-        role: isUser ? 'user' : 'assistant',
-        createdAt: timestamp,
-        contentHtml: contentEl.innerHTML,
-        contentText: contentEl.textContent,
-        contentMarkdown: htmlToMarkdownSimple(contentEl.innerHTML),
-        reasoning_summary: reasoning,
-        citations: extractCitations(el),
-      };
-
-      messages.push(message);
+      var msg = extractClaudeMessageFromElement(item.el, item.type, index);
+      if (msg) messages.push(msg);
     } catch (err) {
-      console.error('[AI Export] Failed to extract message:', err);
+      console.error('[AI Export] Failed to extract Claude message:', err);
     }
   });
 
-  return {
-    messages: messages,
-  };
+  // 如果 DOM 提取也没找到，尝试通用兜底
+  if (messages.length === 0) {
+    console.warn('[AI Export] No messages found with known selectors, trying generic extraction');
+    messages = extractClaudeMessagesGeneric();
+  }
+
+  return { messages: messages };
 }
 
-// 通用 DOM 提取（兜底方案）
+// 按文档顺序排序元素
+function sortByDocumentOrder(elements) {
+  return Array.from(elements).sort(function(a, b) {
+    var pos = a.compareDocumentPosition(b);
+    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  });
+}
+
+// 从单个元素提取 Claude 消息
+function extractClaudeMessageFromElement(el, type, index) {
+  var message = {
+    id: 'msg-' + index,
+    role: type === 'user' ? 'user' : 'assistant'
+  };
+
+  if (type === 'user') {
+    // 用户消息：直接从 [data-testid="user-message"] 提取
+    var contentText = el.textContent ? el.textContent.trim() : '';
+    message.contentText = contentText;
+    message.contentHtml = el.innerHTML;
+    message.contentMarkdown = htmlToMarkdownSimple(el.innerHTML);
+
+    // 文件附件
+    var attachments = [];
+    var fileThumbnails = el.querySelectorAll('[data-testid="file-thumbnail"]');
+    fileThumbnails.forEach(function(ft) {
+      attachments.push({
+        name: ft.textContent ? ft.textContent.trim() : (ft.getAttribute('data-file-name') || 'attachment')
+      });
+    });
+    if (attachments.length > 0) message.attachments = attachments;
+
+  } else {
+    // AI 消息：从 .font-claude-response 提取
+    var proseEl = el.querySelector('div[class*="prose"]') || el;
+
+    message.contentHtml = proseEl.innerHTML;
+    message.contentText = proseEl.textContent ? proseEl.textContent.trim() : '';
+    message.contentMarkdown = htmlToMarkdownSimple(proseEl.innerHTML);
+
+    // 提取思考过程
+    var turnContainer = el.closest('[data-test-render-count]') || el.parentElement;
+    if (turnContainer) {
+      var thinkingSelectors = [
+        '[class*="thinking"]',
+        '[class*="reasoning"]',
+        'details'
+      ];
+      for (var i = 0; i < thinkingSelectors.length; i++) {
+        var thinkingEl = turnContainer.querySelector(thinkingSelectors[i]);
+        if (thinkingEl) {
+          // 如果是 <details> 元素，获取展开后的内容
+          if (thinkingEl.tagName.toLowerCase() === 'details') {
+            // 获取 <details> 中除了 <summary> 之外的的内容
+            var summary = thinkingEl.querySelector('summary');
+            var detailsContent = thinkingEl.innerHTML;
+            if (summary) {
+              // 移除 summary 内容
+              detailsContent = thinkingEl.innerHTML.replace(summary.outerHTML, '');
+            }
+            var tempDiv = document.createElement('div');
+            tempDiv.innerHTML = detailsContent;
+            message.reasoning_summary = tempDiv.textContent ? tempDiv.textContent.trim() : null;
+          } else {
+            message.reasoning_summary = thinkingEl.textContent ? thinkingEl.textContent.trim() : null;
+          }
+          break;
+        }
+      }
+    }
+
+    // 提取引用
+    message.citations = extractCitations(el);
+  }
+
+  return message;
+}
+
+// 通用 Claude 消息提取（兜底）
+function extractClaudeMessagesGeneric() {
+  var messages = [];
+
+  // 尝试在 [role="main"] 中找消息
+  var mainEl = document.querySelector('[role="main"]');
+  if (!mainEl) return messages;
+
+  // 找所有段落，用启发式判断角色
+  var allBlocks = mainEl.querySelectorAll('p, div[class*="prose"], [class*="message"], [class*="response"]');
+  var lastRole = null;
+
+  allBlocks.forEach(function(el, index) {
+    var text = el.textContent ? el.textContent.trim() : '';
+    if (text.length < 10) return;
+
+    // 判断角色：如果有反馈按钮则是 AI 消息
+    var hasFeedback = !!el.closest('article, div')?.querySelector('button[aria-label*="feedback"]');
+    var role = hasFeedback ? 'assistant' : (lastRole === 'assistant' ? 'user' : 'user');
+
+    // 交替模式：如果连续两个相同角色，重新判断
+    if (role === lastRole) {
+      role = role === 'user' ? 'assistant' : 'user';
+    }
+
+    messages.push({
+      id: 'msg-' + index,
+      role: role,
+      contentText: text,
+      contentHtml: el.innerHTML,
+      contentMarkdown: htmlToMarkdownSimple(el.innerHTML)
+    });
+
+    lastRole = role;
+  });
+
+  return messages;
+}
+
+// ========== 通用 DOM 提取（兜底） ==========
 async function extractDataFromDOM() {
   console.log('[AI Export] Using DOM fallback extraction...');
 
-  const messages = [];
+  var messages = [];
+  var containers = document.querySelectorAll('[class*="message"], [class*="conversation"], [class*="chat"], article, section');
 
-  // 尝试查找所有可能是消息容器的元素
-  const containers = document.querySelectorAll('[class*="message"], [class*="conversation"], [class*="chat"], article, section');
-
-  containers.forEach((container, index) => {
+  containers.forEach(function(container, index) {
     // 跳过嵌套的消息
-    if (container.parentElement?.closest('[class*="message"]')) {
+    if (container.parentElement && container.parentElement.closest('[class*="message"]')) {
       return;
     }
 
     try {
-      const text = container.textContent?.trim();
+      var text = container.textContent ? container.textContent.trim() : '';
       if (!text || text.length < 10) return;
 
-      // 判断角色
-      const isUser = container.classList.contains('user') ||
-                     container.classList.contains('user-message') ||
-                     container.querySelector('[class*="user"]') !== null;
+      var isUser = container.classList.contains('user') ||
+                   container.classList.contains('user-message') ||
+                   container.querySelector('[class*="user"]') !== null;
 
-      const message = {
-        id: `msg-${index}`,
+      messages.push({
+        id: 'msg-' + index,
         role: isUser ? 'user' : 'assistant',
         contentText: text,
         contentHtml: container.innerHTML,
-        contentMarkdown: htmlToMarkdownSimple(container.innerHTML),
-      };
-
-      messages.push(message);
+        contentMarkdown: htmlToMarkdownSimple(container.innerHTML)
+      });
     } catch (err) {
       console.error('[AI Export] Failed to extract from container:', err);
     }
   });
 
-  return { messages };
+  return { messages: messages };
 }
 
-// 辅助函数：提取时间戳
+// ========== 辅助函数 ==========
+
 function extractTimestamp(element) {
-  const timeEl = element.querySelector('time');
+  var timeEl = element.querySelector('time');
   if (timeEl) {
     return timeEl.getAttribute('datetime') || timeEl.textContent;
   }
-
-  // 尝试从属性中提取
-  const datetime = element.getAttribute('data-timestamp') ||
-                   element.getAttribute('data-created-at');
+  var datetime = element.getAttribute('data-timestamp') || element.getAttribute('data-created-at');
   if (datetime) return datetime;
-
   return null;
 }
 
-// 辅助函数：提取模型信息
 function extractModel(element) {
-  const modelEl = element.querySelector('[class*="model"], [data-model]');
-  return modelEl?.getAttribute('data-model') || modelEl?.textContent;
+  var modelEl = element.querySelector('[class*="model"], [data-model]');
+  return modelEl ? (modelEl.getAttribute('data-model') || modelEl.textContent) : null;
 }
 
-// 辅助函数：提取引用
 function extractCitations(element) {
-  const citations = [];
-  const citationElements = element.querySelectorAll('[class*="citation"], [class*="reference"], a[href^="http"]');
+  var citations = [];
+  var citationElements = element.querySelectorAll('a[href^="http"]');
 
-  citationElements.forEach((cite, index) => {
-    const url = cite.getAttribute('href');
-    if (url && url.startsWith('http')) {
+  citationElements.forEach(function(cite, index) {
+    var url = cite.getAttribute('href');
+    if (url && url.indexOf('http') === 0) {
       citations.push({
         index: index + 1,
         url: url,
-        title: cite.getAttribute('title') || cite.textContent?.slice(0, 100),
+        title: cite.getAttribute('title') || (cite.textContent ? cite.textContent.slice(0, 100) : '')
       });
     }
   });
@@ -272,132 +386,98 @@ function extractCitations(element) {
   return citations;
 }
 
-// 辅助函数：从页面提取标题
 function extractTitleFromPage() {
-  const currentPath = window.location.pathname;
+  var currentPath = window.location.pathname;
 
-  const conversationLinkSelectors = [
-    `a[href="${currentPath}"]`,
-    `a[href$="${currentPath}"]`,
-    `a[aria-current="page"][href*="/c/"]`,
-    `nav a[href*="/c/"][aria-current="page"]`,
-    `aside a[href*="/c/"][aria-current="page"]`,
-    `a[data-testid*="conversation"][href*="/c/"]`,
-    `[data-conversation-title]`,
+  var conversationLinkSelectors = [
+    'a[href="' + currentPath + '"]',
+    'a[href$="' + currentPath + '"]',
+    'a[aria-current="page"][href*="/c/"]',
+    'nav a[href*="/c/"][aria-current="page"]',
+    'aside a[href*="/c/"][aria-current="page"]',
+    '[data-conversation-title]'
   ];
 
-  for (const selector of conversationLinkSelectors) {
-    const el = document.querySelector(selector);
-    const text = normalizeInlineText(el?.textContent || '');
+  for (var i = 0; i < conversationLinkSelectors.length; i++) {
+    var el = document.querySelector(conversationLinkSelectors[i]);
+    var text = el && el.textContent ? el.textContent.trim() : '';
     if (text && text.toLowerCase() !== 'chatgpt') {
       return text;
     }
   }
 
-  const cleanedDocumentTitle = cleanConversationTitle(document.title);
-  if (cleanedDocumentTitle) {
-    return cleanedDocumentTitle;
+  if (document.title) {
+    var parts = document.title.split(/\s+-\s+/);
+    var filtered = parts.filter(function(p) { return p.trim().toLowerCase() !== 'chatgpt'; });
+    if (filtered.length > 0) return filtered[filtered.length - 1].trim();
   }
 
-  // 最后才兜底到页面标题元素，避免拿到正文里的 h1
-  const titleSelectors = [
-    '[data-conversation-title]',
-    'header h1',
-    '[class*="title"]',
-    'title',
-  ];
-
-  for (const selector of titleSelectors) {
-    const el = document.querySelector(selector);
-    if (el) {
-      const text = cleanConversationTitle(el.textContent?.trim() || '');
-      if (text) return text;
-    }
-  }
-
-  return '未命名会话';
+  return '\u672a\u547d\u540d\u4f1a\u8bdd';
 }
 
-// 辅助函数：简单的 HTML 转 Markdown
+// 简单的 HTML 转 Markdown
 function htmlToMarkdownSimple(html) {
   if (!html) return '';
 
-  const temp = document.createElement('div');
+  var temp = document.createElement('div');
   temp.innerHTML = html;
 
-  // 清理明显的 UI 杂质和隐藏噪音，避免正文被重复拼接。
-  temp.querySelectorAll('button, svg, style, script, noscript, .sr-only, .screen-reader-only, [aria-hidden="true"]').forEach(el => {
+  // 清理 UI 杂质
+  temp.querySelectorAll('button, svg, style, script, noscript, .sr-only, .screen-reader-only, [aria-hidden="true"]').forEach(function(el) {
     el.remove();
   });
 
-  const markdown = serializeBlockChildren(temp).trim();
+  var markdown = serializeBlockChildren(temp).trim();
   return normalizeMarkdown(markdown);
 }
 
-function serializeBlockChildren(root, indent = 0) {
-  let result = '';
-  root.childNodes.forEach(node => {
-    result += serializeNode(node, indent, false);
+function serializeBlockChildren(root) {
+  var result = '';
+  root.childNodes.forEach(function(node) {
+    result += serializeNode(node, false);
   });
   return result;
 }
 
-function serializeInlineChildren(root, indent = 0) {
-  let result = '';
-  root.childNodes.forEach(node => {
-    result += serializeNode(node, indent, true);
-  });
-  return normalizeInlineText(result);
-}
-
-function serializeNode(node, indent = 0, inlineContext = false) {
+function serializeNode(node, inlineContext) {
   if (node.nodeType === Node.TEXT_NODE) {
     return inlineContext ? normalizeInlineText(node.textContent || '') : (node.textContent || '');
   }
 
-  if (node.nodeType !== Node.ELEMENT_NODE) {
-    return '';
-  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
 
-  const el = node;
-  const tag = el.tagName.toLowerCase();
-
-  const mathMarkdown = extractMathMarkdown(el, inlineContext);
-  if (mathMarkdown !== null) {
-    return mathMarkdown;
-  }
+  var el = node;
+  var tag = el.tagName.toLowerCase();
 
   switch (tag) {
     case 'br':
       return inlineContext ? ' ' : '  \n';
 
     case 'pre': {
-      const codeEl = el.querySelector('code');
-      const langClass = codeEl?.className || '';
-      const match = langClass.match(/language-([\w-]+)/);
-      const lang = match ? match[1] : '';
-      const codeText = serializePreformattedText(codeEl || el).replace(/\r/g, '').trimEnd();
-      return `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n\n`;
+      var codeEl = el.querySelector('code');
+      var langClass = codeEl ? codeEl.className : '';
+      var match = langClass.match(/language-([\w-]+)/);
+      var lang = match ? match[1] : '';
+      var codeText = serializePreformattedText(codeEl || el).replace(/\r/g, '').trimEnd();
+      return '\n```' + lang + '\n' + codeText + '\n```\n\n';
     }
 
     case 'code':
-      return `\`${normalizeInlineText(getVisibleText(el))}\``;
+      return '`' + normalizeInlineText(getVisibleText(el)) + '`';
 
     case 'strong':
     case 'b':
-      return `**${serializeInlineChildren(el, indent)}**`;
+      return '**' + serializeInlineChildren(el) + '**';
 
     case 'em':
     case 'i':
-      return `*${serializeInlineChildren(el, indent)}*`;
+      return '*' + serializeInlineChildren(el) + '*';
 
     case 'a': {
-      const href = el.getAttribute('href') || '';
-      const text = normalizeInlineText(getVisibleText(el)) || href;
-      if (!href || href.startsWith('#') || href.startsWith('javascript:')) {
-        return text;
-      }
-      return `[${text}](${href})`;
+      var href = el.getAttribute('href') || '';
+      var text = normalizeInlineText(getVisibleText(el)) || href;
+      if (!href || href.indexOf('#') === 0 || href.indexOf('javascript:') === 0) return text;
+      return '[' + text + '](' + href + ')';
     }
 
     case 'h1':
@@ -406,231 +486,116 @@ function serializeNode(node, indent = 0, inlineContext = false) {
     case 'h4':
     case 'h5':
     case 'h6': {
-      const level = Number(tag[1]);
-      const title = normalizeInlineText(getVisibleText(el));
-      return `\n${'#'.repeat(level)} ${title}\n\n`;
+      var level = Number(tag[1]);
+      var title = normalizeInlineText(getVisibleText(el));
+      return '\n' + '#'.repeat(level) + ' ' + title + '\n\n';
     }
 
     case 'p': {
-      const text = serializeInlineChildren(el, indent);
-      return text ? `${text}\n\n` : '';
+      var pText = serializeInlineChildren(el);
+      return pText ? pText + '\n\n' : '';
     }
 
     case 'blockquote': {
-      const text = normalizeMarkdown(serializeBlockChildren(el, indent).trim());
-      if (!text) return '';
-      const quoted = text.split('\n').map(line => line ? `> ${line}` : '>').join('\n');
-      return `${quoted}\n\n`;
+      var bqText = normalizeMarkdown(serializeBlockChildren(el).trim());
+      if (!bqText) return '';
+      var quoted = bqText.split('\n').map(function(line) { return line ? '> ' + line : '>'; }).join('\n');
+      return quoted + '\n\n';
     }
 
-    case 'ul':
-      return serializeList(el, false, indent);
+    case 'ul': {
+      var items = Array.from(el.children).filter(function(child) { return child.tagName && child.tagName.toLowerCase() === 'li'; });
+      if (!items.length) return '';
+      var result = '';
+      items.forEach(function(li) {
+        result += '- ' + (li.textContent ? li.textContent.trim() : '') + '\n';
+      });
+      return result + '\n';
+    }
 
-    case 'ol':
-      return serializeList(el, true, indent);
+    case 'ol': {
+      var oItems = Array.from(el.children).filter(function(child) { return child.tagName && child.tagName.toLowerCase() === 'li'; });
+      if (!oItems.length) return '';
+      var oResult = '';
+      oItems.forEach(function(li, idx) {
+        oResult += (idx + 1) + '. ' + (li.textContent ? li.textContent.trim() : '') + '\n';
+      });
+      return oResult + '\n';
+    }
 
-    case 'table':
-      return serializeTable(el);
+    case 'table': {
+      var rows = el.querySelectorAll('tr');
+      var tMd = '\n';
+      rows.forEach(function(tr, rowIndex) {
+        var cells = Array.from(tr.querySelectorAll('th, td')).map(function(cell) {
+          return (normalizeInlineText(getVisibleText(cell)).replace(/\|/g, '\\|') || ' ');
+        });
+        tMd += '| ' + cells.join(' | ') + ' |\n';
+        if (rowIndex === 0) {
+          tMd += '| ' + cells.map(function() { return '---'; }).join(' | ') + ' |\n';
+        }
+      });
+      return tMd + '\n';
+    }
 
     case 'hr':
-      return `\n---\n\n`;
+      return '\n---\n\n';
 
     case 'div':
     case 'section':
     case 'article':
     case 'main': {
-      if (hasBlockChildren(el)) {
-        return serializeBlockChildren(el, indent);
-      }
-      const text = serializeInlineChildren(el, indent);
-      return text ? `${text}\n\n` : '';
+      if (hasBlockChildren(el)) return serializeBlockChildren(el);
+      var dText = serializeInlineChildren(el);
+      return dText ? dText + '\n\n' : '';
     }
 
     case 'span':
-      return serializeInlineChildren(el, indent);
+      return serializeInlineChildren(el);
 
     default: {
-      if (hasBlockChildren(el)) {
-        return serializeBlockChildren(el, indent);
-      }
-      return serializeInlineChildren(el, indent);
+      if (hasBlockChildren(el)) return serializeBlockChildren(el);
+      return serializeInlineChildren(el);
     }
   }
 }
 
-function serializeList(listEl, ordered, indent = 0) {
-  const items = Array.from(listEl.children).filter(child => child.tagName?.toLowerCase() === 'li');
-  if (!items.length) return '';
-
-  let result = '';
-  items.forEach((li, index) => {
-    result += serializeListItem(li, ordered ? `${index + 1}.` : '-', indent);
+function serializeInlineChildren(root) {
+  var result = '';
+  root.childNodes.forEach(function(node) {
+    result += serializeNode(node, true);
   });
-  return `${result}\n`;
-}
-
-function serializeListItem(li, marker, indent = 0) {
-  let inlineParts = '';
-  let nestedParts = '';
-
-  li.childNodes.forEach(child => {
-    if (child.nodeType === Node.ELEMENT_NODE) {
-      const tag = child.tagName.toLowerCase();
-      if (tag === 'ul' || tag === 'ol') {
-        nestedParts += serializeList(child, tag === 'ol', indent + 1);
-        return;
-      }
-      if (tag === 'p') {
-        const text = serializeInlineChildren(child, indent).trim();
-        if (text) inlineParts += (inlineParts ? ' ' : '') + text;
-        return;
-      }
-      if (tag === 'pre') {
-        nestedParts += serializeNode(child, indent + 1, false);
-        return;
-      }
-    }
-
-    const fragment = serializeNode(child, indent + 1, true).trim();
-    if (fragment) {
-      inlineParts += (inlineParts ? ' ' : '') + fragment;
-    }
-  });
-
-  const indentStr = '  '.repeat(indent);
-  let result = '';
-
-  if (inlineParts) {
-    result += `${indentStr}${marker} ${inlineParts}\n`;
-  }
-
-  if (nestedParts) {
-    result += nestedParts;
-  }
-
-  return result;
-}
-
-function serializeTable(tableEl) {
-  const rows = Array.from(tableEl.querySelectorAll('tr'));
-  if (!rows.length) return '';
-
-  let markdown = '\n';
-  rows.forEach((tr, rowIndex) => {
-    const cells = Array.from(tr.querySelectorAll('th, td')).map(cell => {
-      return normalizeInlineText(getVisibleText(cell)).replace(/\|/g, '\\|') || ' ';
-    });
-    markdown += `| ${cells.join(' | ')} |\n`;
-    if (rowIndex === 0) {
-      markdown += `| ${cells.map(() => '---').join(' | ')} |\n`;
-    }
-  });
-
-  return `${markdown}\n`;
-}
-
-function hasBlockChildren(el) {
-  return Array.from(el.children).some(child => {
-    return /^(div|section|article|main|p|pre|blockquote|ul|ol|table|h[1-6]|hr)$/i.test(child.tagName);
-  });
-}
-
-function extractMathMarkdown(el, inlineContext = false) {
-  const tag = el.tagName.toLowerCase();
-  const className = typeof el.className === 'string' ? el.className : '';
-
-  if (tag === 'annotation' || tag === 'annotation-xml' || tag === 'semantics') {
-    return '';
-  }
-
-  if (/(katex-html|mjx-assistive-mml|MathJax_Preview)/i.test(className)) {
-    return '';
-  }
-
-  const isMathContainer =
-    tag === 'math' ||
-    tag === 'mjx-container' ||
-    /(?:^|\s)(katex|katex-display|katex-mathml|math-display|math-inline)(?:\s|$)/i.test(className) ||
-    /(mjx|mathjax)/i.test(className) ||
-    el.classList.contains('katex') ||
-    el.classList.contains('katex-display') ||
-    el.classList.contains('math') ||
-    el.classList.contains('math-display') ||
-    el.hasAttribute('data-tex');
-
-  if (!isMathContainer) {
-    return null;
-  }
-
-  const latex =
-    el.getAttribute('data-tex') ||
-    el.getAttribute('data-latex') ||
-    el.getAttribute('aria-label') ||
-    el.querySelector('annotation[encoding="application/x-tex"]')?.textContent ||
-    el.querySelector('annotation[encoding="application/x-latex"]')?.textContent ||
-    el.querySelector('annotation[encoding*="tex" i]')?.textContent ||
-    el.querySelector('annotation[encoding*="latex" i]')?.textContent ||
-    el.querySelector('script[type^="math/tex"]')?.textContent ||
-    el.querySelector('annotation')?.textContent ||
-    '';
-
-  const cleanLatex = latex.replace(/\s+/g, ' ').trim();
-  if (!cleanLatex) {
-    const fallbackText = normalizeInlineText(getVisibleText(el));
-    if (!fallbackText) return '';
-    return inlineContext ? `$${fallbackText}$` : `\n$$\n${fallbackText}\n$$\n\n`;
-  }
-
-  const isBlockMath =
-    !inlineContext ||
-    tag === 'mjx-container' ||
-    el.classList.contains('katex-display') ||
-    el.classList.contains('math-display') ||
-    /display/i.test(className) ||
-    getVisibleText(el).includes('\n');
-
-  if (isBlockMath) {
-    return `\n$$\n${cleanLatex}\n$$\n\n`;
-  }
-
-  return `$${cleanLatex}$`;
+  return normalizeInlineText(result);
 }
 
 function serializePreformattedText(root) {
-  const parts = [];
+  var parts = [];
 
   function walk(node) {
     if (node.nodeType === Node.TEXT_NODE) {
       parts.push(node.textContent || '');
       return;
     }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-    if (node.nodeType !== Node.ELEMENT_NODE) {
-      return;
-    }
-
-    const el = node;
-    const tag = el.tagName.toLowerCase();
-
+    var el = node;
+    var tag = el.tagName.toLowerCase();
     if (tag === 'br') {
       parts.push('\n');
       return;
     }
 
-    const children = Array.from(el.childNodes);
-    children.forEach((child, index) => {
+    var children = Array.from(el.childNodes);
+    children.forEach(function(child, index) {
       walk(child);
-
       if (child.nodeType === Node.ELEMENT_NODE) {
-        const childEl = child;
-        const childTag = childEl.tagName.toLowerCase();
-        const shouldBreakLine =
-          /^(div|p|li|tr)$/.test(childTag) ||
+        var childEl = child;
+        var childTag = childEl.tagName.toLowerCase();
+        var shouldBreak = /^(div|p|li|tr)$/.test(childTag) ||
           /(line|code-line)/i.test(childEl.className || '') ||
           childEl.getAttribute('data-line') !== null;
-
-        if (shouldBreakLine && index < children.length - 1) {
-          if (!parts[parts.length - 1]?.endsWith('\n')) {
+        if (shouldBreak && index < children.length - 1) {
+          if (!parts[parts.length - 1] || !parts[parts.length - 1].endsWith('\n')) {
             parts.push('\n');
           }
         }
@@ -639,58 +604,39 @@ function serializePreformattedText(root) {
   }
 
   walk(root);
+  return parts.join('').replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n');
+}
 
-  return parts.join('')
-    .replace(/\u00a0/g, ' ')
-    .replace(/\n{3,}/g, '\n\n');
+function hasBlockChildren(el) {
+  return Array.from(el.children).some(function(child) {
+    return /^(div|section|article|main|p|pre|blockquote|ul|ol|table|h[1-6]|hr)$/i.test(child.tagName);
+  });
 }
 
 function getVisibleText(el) {
-  const text = typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
+  var text = typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
   return text.replace(/\u00a0/g, ' ');
 }
 
 function normalizeInlineText(text) {
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/\s+([,.;:!?])/g, '$1')
-    .trim();
+  return text.replace(/\s+/g, ' ').replace(/\s+([,.;:!?])/g, '$1').trim();
 }
 
 function normalizeMarkdown(text) {
-  return text
-    .replace(/\r/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return text.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function cleanConversationTitle(rawTitle) {
-  if (!rawTitle) return '';
-
-  const normalized = rawTitle.replace(/\s+/g, ' ').trim();
-  if (!normalized) return '';
-
-  const parts = normalized.split(/\s+-\s+/).map(part => part.trim()).filter(Boolean);
-  const filtered = parts.filter(part => !/^chatgpt$/i.test(part));
-  if (filtered.length === 0) {
-    return normalized === 'ChatGPT' ? '' : normalized;
-  }
-
-  return filtered[filtered.length - 1];
-}
-
-// 辅助函数：等待元素出现
-function waitForElement(selector, timeout = 5000) {
-  return new Promise((resolve, reject) => {
-    const element = document.querySelector(selector);
+function waitForElement(selector, timeout) {
+  if (timeout === undefined) timeout = 5000;
+  return new Promise(function(resolve, reject) {
+    var element = document.querySelector(selector);
     if (element) {
       resolve(element);
       return;
     }
 
-    const observer = new MutationObserver(() => {
-      const element = document.querySelector(selector);
+    var observer = new MutationObserver(function() {
+      var element = document.querySelector(selector);
       if (element) {
         observer.disconnect();
         resolve(element);
@@ -699,9 +645,9 @@ function waitForElement(selector, timeout = 5000) {
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    setTimeout(() => {
+    setTimeout(function() {
       observer.disconnect();
-      reject(new Error(`Timeout waiting for ${selector}`));
+      reject(new Error('Timeout waiting for ' + selector));
     }, timeout);
   });
 }
