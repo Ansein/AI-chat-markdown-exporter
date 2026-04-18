@@ -576,11 +576,14 @@ function extractMathMarkdown(el, inlineContext) {
   var tag = el.tagName.toLowerCase();
   var className = typeof el.className === 'string' ? el.className : '';
 
-  // 跳过辅助元素
-  if (tag === 'annotation' || tag === 'annotation-xml' || tag === 'semantics') return '';
-  if (/(katex-html|mjx-assistive-mml|MathJax_Preview)/i.test(className)) return '';
+  if (tag === 'annotation' || tag === 'annotation-xml' || tag === 'semantics') {
+    return '';
+  }
 
-  // 判断是否是数学公式容器
+  if (/(katex-html|mjx-assistive-mml|MathJax_Preview)/i.test(className)) {
+    return '';
+  }
+
   var isMathContainer =
     tag === 'math' ||
     tag === 'mjx-container' ||
@@ -592,51 +595,41 @@ function extractMathMarkdown(el, inlineContext) {
     el.classList.contains('math-display') ||
     el.hasAttribute('data-tex');
 
-  if (!isMathContainer) return null;
+  if (!isMathContainer) {
+    return null;
+  }
 
-  // 提取 LaTeX
   var latex =
     el.getAttribute('data-tex') ||
     el.getAttribute('data-latex') ||
     el.getAttribute('aria-label') ||
+    el.querySelector('annotation[encoding="application/x-tex"]')?.textContent ||
+    el.querySelector('annotation[encoding="application/x-latex"]')?.textContent ||
+    el.querySelector('annotation[encoding*="tex" i]')?.textContent ||
+    el.querySelector('annotation[encoding*="latex" i]')?.textContent ||
+    el.querySelector('script[type^="math/tex"]')?.textContent ||
+    el.querySelector('annotation')?.textContent ||
     '';
 
-  // 尝试从 annotation 子元素获取
-  if (!latex) {
-    var annotations = el.querySelectorAll('annotation');
-    for (var i = 0; i < annotations.length; i++) {
-      var enc = (annotations[i].getAttribute('encoding') || '').toLowerCase();
-      if (enc.indexOf('tex') !== -1 || enc.indexOf('latex') !== -1) {
-        latex = annotations[i].textContent || '';
-        break;
-      }
-    }
-  }
-
-  if (!latex) {
-    var mathScripts = el.querySelectorAll('script[type^="math/tex"]');
-    if (mathScripts.length > 0) latex = mathScripts[0].textContent || '';
-  }
-
-  if (!latex) {
-    var fallback = normalizeInlineText(getVisibleText(el));
-    if (!fallback) return '';
-    return inlineContext ? '$' + fallback + '$' : '\n$$\n' + fallback + '\n$$\n\n';
-  }
-
   var cleanLatex = latex.replace(/\s+/g, ' ').trim();
+  if (!cleanLatex) {
+    var fallbackText = normalizeInlineText(getVisibleText(el));
+    if (!fallbackText) return '';
+    return inlineContext ? '$' + fallbackText + '$' : '\n$$\n' + fallbackText + '\n$$\n\n';
+  }
 
-  // 判断是否是行内还是块级公式
   var isBlockMath =
     !inlineContext ||
     tag === 'mjx-container' ||
     el.classList.contains('katex-display') ||
     el.classList.contains('math-display') ||
-    /display/i.test(className);
+    /display/i.test(className) ||
+    getVisibleText(el).includes('\n');
 
   if (isBlockMath) {
     return '\n$$\n' + cleanLatex + '\n$$\n\n';
   }
+
   return '$' + cleanLatex + '$';
 }
 
