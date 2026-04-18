@@ -320,35 +320,170 @@ async function extractDataFromDOM() {
   console.log('[AI Export] Using DOM fallback extraction...');
 
   var messages = [];
-  var containers = document.querySelectorAll('[class*="message"], [class*="conversation"], [class*="chat"], article, section');
 
-  containers.forEach(function(container, index) {
-    // 跳过嵌套的消息
-    if (container.parentElement && container.parentElement.closest('[class*="message"]')) {
-      return;
+  // 策略：直接找消息级别的最小单元，而非外层容器
+  var allElements = document.querySelectorAll(
+    'article, [role="article"], [class*="message"], [class*="prompt"], ' +
+    '[class*="response"], [class*="assistant"], [class*="human"], ' +
+    '[class*="user-bubble"], [class*="ai-bubble"], [class*="chat-message"], ' +
+    '[data-role], [data-sender]'
+  );
+
+  // 去重：只保留最深层的消息元素
+  var leafMessages = [];
+  allElements.forEach(function(el) {
+    var hasNested = false;
+    el.querySelectorAll('article, [role="article"], [class*="message"], [class*="prompt"], [class*="response"], [class*="assistant"], [class*="human"]').forEach(function(nested) {
+      if (nested !== el) hasNested = true;
+    });
+    if (!hasNested) leafMessages.push(el);
+  });
+
+  if (leafMessages.length === 0) {
+    leafMessages = Array.from(allElements);
+  }
+
+  // 去重
+  var uniqueElements = [];
+  var seen = new Set();
+  leafMessages.forEach(function(el) {
+    if (!seen.has(el)) {
+      seen.add(el);
+      uniqueElements.push(el);
     }
+  });
 
+  // 按文档顺序排序
+  uniqueElements = sortByDocumentOrder(uniqueElements);
+
+  uniqueElements.forEach(function(container, index) {
     try {
       var text = container.textContent ? container.textContent.trim() : '';
       if (!text || text.length < 10) return;
 
-      var isUser = container.classList.contains('user') ||
-                   container.classList.contains('user-message') ||
-                   container.querySelector('[class*="user"]') !== null;
+      // 跳过导航、侧边栏等区域
+      if (isNonMessageArea(container)) return;
+
+      var role = detectMessageRole(container);
 
       messages.push({
         id: 'msg-' + index,
-        role: isUser ? 'user' : 'assistant',
+        role: role,
         contentText: text,
         contentHtml: container.innerHTML,
-        contentMarkdown: htmlToMarkdownSimple(container.innerHTML)
+        contentMarkdown: htmlToMarkdownSimple(container.innerHTML),
+        citations: extractCitations(container)
       });
     } catch (err) {
       console.error('[AI Export] Failed to extract from container:', err);
     }
   });
 
+  // 去重和角色修正
+  if (messages.length > 0) {
+    messages = deduplicateAndFixRoles(messages);
+  }
+
   return { messages: messages };
+}
+
+// 判断元素是否位于非消息区域（导航、侧边栏等）
+function isNonMessageArea(el) {
+  var parent = el.parentElement;
+  while (parent) {
+    var tag = parent.tagName.toLowerCase();
+    var cls = parent.className || '';
+    if (tag === 'nav' || tag === 'header' || tag === 'footer') return true;
+    if (typeof cls === 'string') {
+      var clsLower = cls.toLowerCase();
+      if (clsLower.indexOf('sidebar') !== -1 || clsLower.indexOf('navigation') !== -1 ||
+          clsLower.indexOf('menu') !== -1 || clsLower.indexOf('toolbar') !== -1) return true;
+    }
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
+// 检测消息角色
+function detectMessageRole(el) {
+  // 1. 检查 data 属性
+  var dataRole = el.getAttribute('data-role');
+  var dataSender = el.getAttribute('data-sender');
+  if (dataRole) {
+    var r = dataRole.toLowerCase();
+    if (r.indexOf('user') !== -1 || r.indexOf('human') !== -1) return 'user';
+    if (r.indexOf('assistant') !== -1 || r.indexOf('ai') !== -1 || r.indexOf('bot') !== -1) return 'assistant';
+  }
+  if (dataSender) {
+    var s = dataSender.toLowerCase();
+    if (s === 'human' || s === 'user') return 'user';
+    if (s === 'assistant' || s === 'ai' || s === 'bot') return 'assistant';
+  }
+
+  // 2. 检查 class
+  var cls = (el.className || '').toLowerCase();
+  if (cls.indexOf('user') !== -1 && cls.indexOf('assistant') === -1) return 'user';
+  if (cls.indexOf('human') !== -1 && cls.indexOf('assistant') === -1) return 'user';
+  if (cls.indexOf('prompt') !== -1 && cls.indexOf('response') === -1) return 'user';
+  if (cls.indexOf('assistant') !== -1 || cls.indexOf('ai-bubble') !== -1 || cls.indexOf('bot-') !== -1) return 'assistant';
+  if (cls.indexOf('response') !== -1 || cls.indexOf('ai-') !== -1) return 'assistant';
+
+  // 3. 检查内部是否有明确的用户/AI标识元素
+  var hasUserIndicator = !!el.querySelector('[class*="user-avatar"], [class*="user-icon"], [class*="human-avatar"], [data-role="user"], [data-sender="user"], [data-sender="human"]');
+  var hasAssistantIndicator = !!el.querySelector('[class*="assistant-avatar"], [class*="ai-avatar"], [class*="bot-avatar"], [data-role="assistant"], [data-sender="assistant"], [data-sender="ai"]');
+
+  if (hasUserIndicator && !hasAssistantIndicator) return 'user';
+  if (hasAssistantIndicator && !hasUserIndicator) return 'assistant';
+
+  // 4. 检查是否有典型的AI特征
+  var hasCodeBlocks = el.querySelectorAll('pre, code').length > 0;
+  var hasLinks = el.querySelectorAll('a[href^="http"]').length > 2;
+  var hasBlockquote = el.querySelectorAll('blockquote').length > 0;
+
+  if (hasCodeBlocks || hasLinks || hasBlockquote) return 'assistant';
+
+  // 5. 检查文本特征
+  var text = el.textContent ? el.textContent.trim() : '';
+  var textLen = text.length;
+  var hasLineBreaks = text.indexOf('\n') !== -1;
+
+  if (textLen > 500 && hasLineBreaks) return 'assistant';
+
+  // 6. 默认：简短、无特殊格式 → 用户
+  if (textLen < 200 && !hasCodeBlocks && !hasLinks) return 'user';
+
+  return 'assistant';
+}
+
+// 去重和角色修正
+function deduplicateAndFixRoles(messages) {
+  // 去除重复内容
+  var seen = new Set();
+  var deduped = [];
+  messages.forEach(function(msg) {
+    var key = msg.contentText.slice(0, 100);
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(msg);
+    }
+  });
+
+  // 如果所有消息都是同一角色，尝试用交替模式修正
+  if (deduped.length > 1) {
+    var allSame = true;
+    var firstRole = deduped[0].role;
+    for (var i = 1; i < deduped.length; i++) {
+      if (deduped[i].role !== firstRole) { allSame = false; break; }
+    }
+
+    if (allSame) {
+      deduped.forEach(function(msg, i) {
+        msg.role = i % 2 === 0 ? 'user' : 'assistant';
+      });
+    }
+  }
+
+  return deduped;
 }
 
 // ========== 辅助函数 ==========
