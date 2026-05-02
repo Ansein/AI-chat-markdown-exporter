@@ -3,11 +3,6 @@
 (function(global) {
   'use strict';
 
-  if (!global.PlatformManager) {
-    console.error('[AI Export] PlatformManager not found, skipping ChatGPT registration');
-    return;
-  }
-
   const ChatGPTPlatform = {
     name: 'chatgpt',
     displayName: 'ChatGPT',
@@ -296,9 +291,13 @@
     },
   };
 
-  global.PlatformManager.register(ChatGPTPlatform);
-  console.log('[AI Export] ChatGPT platform registered');
-
   global.ChatGPTPlatform = ChatGPTPlatform;
+
+  if (global.PlatformManager && typeof global.PlatformManager.register === 'function') {
+    global.PlatformManager.register(ChatGPTPlatform);
+    console.log('[AI Export] ChatGPT platform registered');
+  } else {
+    console.warn('[AI Export] PlatformManager not available, ChatGPTPlatform exposed but not registered');
+  }
 
 })(typeof window !== 'undefined' ? window : this);

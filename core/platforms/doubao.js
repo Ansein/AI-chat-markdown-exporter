@@ -3,11 +3,6 @@
 (function(global) {
   'use strict';
 
-  if (!global.PlatformManager) {
-    console.error('[AI Export] PlatformManager not found, skipping DouBao registration');
-    return;
-  }
-
   const DouBaoPlatform = {
     name: 'doubao',
     displayName: '豆包',
@@ -464,9 +459,13 @@
     },
   };
 
-  global.PlatformManager.register(DouBaoPlatform);
-  console.log('[AI Export] DouBao platform registered');
-
   global.DouBaoPlatform = DouBaoPlatform;
+
+  if (global.PlatformManager && typeof global.PlatformManager.register === 'function') {
+    global.PlatformManager.register(DouBaoPlatform);
+    console.log('[AI Export] DouBao platform registered');
+  } else {
+    console.warn('[AI Export] PlatformManager not available, DouBaoPlatform exposed but not registered');
+  }
 
 })(typeof window !== 'undefined' ? window : this);

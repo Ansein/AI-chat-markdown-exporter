@@ -195,20 +195,26 @@
 
   async function handleAIRequest(url, options, response) {
     try {
+      let text;
       let data;
+
       try {
-        data = await response.json();
-      } catch(e) {
-        const text = await response.text();
-        if (text && (text.startsWith('{') || text.startsWith('['))) {
-          try {
-            data = JSON.parse(text);
-          } catch (parseErr) {
-            return;
-          }
-        } else {
-          return;
+        if (response.text && typeof response.text === 'function') {
+          text = await response.text();
+        } else if (response.responseText) {
+          text = response.responseText;
         }
+      } catch (e) {
+        console.warn('[AI Export] Failed to read response text:', e.message);
+        return;
+      }
+
+      if (!text) return;
+
+      try {
+        data = JSON.parse(text);
+      } catch (parseErr) {
+        return;
       }
 
       if (!data) return;

@@ -3,11 +3,6 @@
 (function(global) {
   'use strict';
 
-  if (!global.PlatformManager) {
-    console.error('[AI Export] PlatformManager not found, skipping TongYi registration');
-    return;
-  }
-
   const TongYiPlatform = {
     name: 'tongyi',
     displayName: '通义千问',
@@ -458,9 +453,13 @@
     },
   };
 
-  global.PlatformManager.register(TongYiPlatform);
-  console.log('[AI Export] TongYi platform registered');
-
   global.TongYiPlatform = TongYiPlatform;
+
+  if (global.PlatformManager && typeof global.PlatformManager.register === 'function') {
+    global.PlatformManager.register(TongYiPlatform);
+    console.log('[AI Export] TongYi platform registered');
+  } else {
+    console.warn('[AI Export] PlatformManager not available, TongYiPlatform exposed but not registered');
+  }
 
 })(typeof window !== 'undefined' ? window : this);

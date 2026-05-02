@@ -3,11 +3,6 @@
 (function(global) {
   'use strict';
 
-  if (!global.PlatformManager) {
-    console.error('[AI Export] PlatformManager not found, skipping YiYan registration');
-    return;
-  }
-
   const YiYanPlatform = {
     name: 'yiyan',
     displayName: '文心一言',
@@ -431,9 +426,13 @@
     },
   };
 
-  global.PlatformManager.register(YiYanPlatform);
-  console.log('[AI Export] YiYan platform registered');
-
   global.YiYanPlatform = YiYanPlatform;
+
+  if (global.PlatformManager && typeof global.PlatformManager.register === 'function') {
+    global.PlatformManager.register(YiYanPlatform);
+    console.log('[AI Export] YiYan platform registered');
+  } else {
+    console.warn('[AI Export] PlatformManager not available, YiYanPlatform exposed but not registered');
+  }
 
 })(typeof window !== 'undefined' ? window : this);

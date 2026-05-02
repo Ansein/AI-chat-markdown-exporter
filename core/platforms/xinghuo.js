@@ -3,11 +3,6 @@
 (function(global) {
   'use strict';
 
-  if (!global.PlatformManager) {
-    console.error('[AI Export] PlatformManager not found, skipping XingHuo registration');
-    return;
-  }
-
   const XingHuoPlatform = {
     name: 'xinghuo',
     displayName: '讯飞星火',
@@ -456,9 +451,13 @@
     },
   };
 
-  global.PlatformManager.register(XingHuoPlatform);
-  console.log('[AI Export] XingHuo platform registered');
-
   global.XingHuoPlatform = XingHuoPlatform;
+
+  if (global.PlatformManager && typeof global.PlatformManager.register === 'function') {
+    global.PlatformManager.register(XingHuoPlatform);
+    console.log('[AI Export] XingHuo platform registered');
+  } else {
+    console.warn('[AI Export] PlatformManager not available, XingHuoPlatform exposed but not registered');
+  }
 
 })(typeof window !== 'undefined' ? window : this);

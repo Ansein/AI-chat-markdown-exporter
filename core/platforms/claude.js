@@ -3,11 +3,6 @@
 (function(global) {
   'use strict';
 
-  if (!global.PlatformManager) {
-    console.error('[AI Export] PlatformManager not found, skipping Claude registration');
-    return;
-  }
-
   const ClaudePlatform = {
     name: 'claude',
     displayName: 'Claude',
@@ -467,9 +462,13 @@
     },
   };
 
-  global.PlatformManager.register(ClaudePlatform);
-  console.log('[AI Export] Claude platform registered');
-
   global.ClaudePlatform = ClaudePlatform;
+
+  if (global.PlatformManager && typeof global.PlatformManager.register === 'function') {
+    global.PlatformManager.register(ClaudePlatform);
+    console.log('[AI Export] Claude platform registered');
+  } else {
+    console.warn('[AI Export] PlatformManager not available, ClaudePlatform exposed but not registered');
+  }
 
 })(typeof window !== 'undefined' ? window : this);
