@@ -12,12 +12,14 @@
     }
 
     body {
-      width: 350px;
+      width: 400px;
+      max-height: 600px;
       padding: 16px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
       color: #333;
       background: #fff;
+      overflow-y: auto;
     }
 
     h1 {
@@ -50,14 +52,14 @@
     }
 
     .btn {
-      width: 100%;
-      padding: 10px 16px;
+      padding: 8px 16px;
       border: none;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 500;
       cursor: pointer;
       transition: all 0.2s;
+      white-space: nowrap;
     }
 
     .btn-primary {
@@ -77,11 +79,24 @@
     .btn-secondary {
       background: #f5f5f5;
       color: #333;
-      margin-top: 8px;
     }
 
     .btn-secondary:hover {
       background: #e0e0e0;
+    }
+
+    .btn-danger {
+      background: #dc3545;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #c82333;
+    }
+
+    .btn-small {
+      padding: 6px 12px;
+      font-size: 12px;
     }
 
     .section {
@@ -90,13 +105,68 @@
       border-top: 1px solid #eee;
     }
 
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
     .section-title {
       font-size: 12px;
       font-weight: 600;
       color: #666;
-      margin-bottom: 8px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn-group.full-width {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-group.full-width .btn {
+      flex: 1;
+      text-align: center;
+    }
+
+    .search-box {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .search-input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .search-input:focus {
+      outline: none;
+      border-color: #1a73e8;
+    }
+
+    .filter-select {
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+      background: white;
+      min-width: 120px;
+    }
+
+    .filter-select:focus {
+      outline: none;
+      border-color: #1a73e8;
     }
 
     .option {
@@ -161,27 +231,6 @@
       margin-top: 8px;
     }
 
-    .loading {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-
-    .spinner {
-      width: 20px;
-      height: 20px;
-      border: 2px solid #f3f3f3;
-      border-top: 2px solid #1a73e8;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-
     .progress {
       margin-top: 12px;
     }
@@ -205,74 +254,313 @@
       font-size: 11px;
       color: #666;
       margin-top: 8px;
-      max-height: 100px;
+      max-height: 80px;
       overflow-y: auto;
     }
 
     .log-item {
       padding: 2px 0;
     }
+
+    .conversation-list {
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid #eee;
+      border-radius: 6px;
+    }
+
+    .conversation-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .conversation-item:last-child {
+      border-bottom: none;
+    }
+
+    .conversation-item:hover {
+      background: #f8f9fa;
+    }
+
+    .conversation-item.selected {
+      background: #e3f2fd;
+      border-left: 3px solid #1a73e8;
+    }
+
+    .conversation-checkbox {
+      margin-right: 10px;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .conversation-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .conversation-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: #333;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .conversation-meta {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    .conversation-meta span {
+      margin-right: 12px;
+    }
+
+    .platform-badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      margin-left: 8px;
+    }
+
+    .platform-chatgpt { background: #10a37f; color: white; }
+    .platform-claude { background: #db7c5e; color: white; }
+    .platform-yiyan { background: #2932e1; color: white; }
+    .platform-xinghuo { background: #0066ff; color: white; }
+    .platform-tongyi { background: #ff6a00; color: white; }
+    .platform-doubao { background: #00b42a; color: white; }
+
+    .empty-state {
+      padding: 30px 20px;
+      text-align: center;
+      color: #888;
+      font-size: 13px;
+    }
+
+    .empty-state-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
+    }
+
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      padding: 10px 16px;
+      font-size: 13px;
+      color: #666;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .tab:hover {
+      color: #333;
+    }
+
+    .tab.active {
+      color: #1a73e8;
+      border-bottom-color: #1a73e8;
+      font-weight: 500;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .batch-actions {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      align-items: center;
+    }
+
+    .batch-info {
+      font-size: 12px;
+      color: #666;
+      flex: 1;
+    }
+
+    .batch-info strong {
+      color: #1a73e8;
+    }
+
+    .import-export-actions {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .file-input {
+      display: none;
+    }
+
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .checkbox-label input {
+      margin-right: 6px;
+    }
+
+    .platform-label {
+      font-size: 12px;
+      color: #888;
+      margin-left: 8px;
+    }
   </style>
 </head>
 <body>
   <h1>📥 AI 会话导出工具</h1>
 
-  <div id="status" class="status unknown">
-    检测平台中...
+  <div class="tabs">
+    <div class="tab active" data-tab="export">导出</div>
+    <div class="tab" data-tab="history">历史记录</div>
   </div>
 
-  <button id="exportBtn" class="btn btn-primary" disabled>
-    导出当前会话
-  </button>
+  <div id="export-tab" class="tab-content active">
+    <div id="status" class="status unknown">
+      检测平台中...
+    </div>
 
-  <div id="messageCount" class="message-count"></div>
+    <div class="btn-group full-width">
+      <button id="exportBtn" class="btn btn-primary" disabled>
+        导出当前会话
+      </button>
+      <button id="saveToCacheBtn" class="btn btn-secondary" disabled>
+        保存到缓存
+      </button>
+    </div>
 
-  <div class="progress" style="display: none;">
-    <div class="progress-bar">
-      <div class="progress-bar-fill" id="progressFill"></div>
+    <div id="messageCount" class="message-count"></div>
+
+    <div class="progress" style="display: none;">
+      <div class="progress-bar">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">导出选项</div>
+
+      <div class="option">
+        <label>包含时间戳</label>
+        <label class="switch">
+          <input type="checkbox" id="optTimestamp" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="option">
+        <label>包含模型信息</label>
+        <label class="switch">
+          <input type="checkbox" id="optModel" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="option">
+        <label>包含引用来源</label>
+        <label class="switch">
+          <input type="checkbox" id="optReferences" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="option">
+        <label>包含思考过程</label>
+        <label class="switch">
+          <input type="checkbox" id="optReasoning" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <button id="refreshBtn" class="btn btn-secondary" style="width: 100%;">
+        刷新检测
+      </button>
     </div>
   </div>
 
-  <div class="section">
-    <div class="section-title">导出选项</div>
-
-    <div class="option">
-      <label>包含时间戳</label>
-      <label class="switch">
-        <input type="checkbox" id="optTimestamp" checked>
-        <span class="slider"></span>
-      </label>
+  <div id="history-tab" class="tab-content">
+    <div class="search-box">
+      <input type="text" id="searchInput" class="search-input" placeholder="搜索会话标题或内容...">
+      <select id="platformFilter" class="filter-select">
+        <option value="">所有平台</option>
+        <option value="chatgpt">ChatGPT</option>
+        <option value="claude">Claude</option>
+        <option value="yiyan">文心一言</option>
+        <option value="xinghuo">讯飞星火</option>
+        <option value="tongyi">通义千问</option>
+        <option value="doubao">豆包</option>
+      </select>
     </div>
 
-    <div class="option">
-      <label>包含模型信息</label>
-      <label class="switch">
-        <input type="checkbox" id="optModel" checked>
-        <span class="slider"></span>
+    <div class="batch-actions">
+      <label class="checkbox-label">
+        <input type="checkbox" id="selectAllCheckbox">
+        <span>全选</span>
       </label>
+      <div class="batch-info">
+        已选择 <strong id="selectedCount">0</strong> 项
+      </div>
     </div>
 
-    <div class="option">
-      <label>包含引用来源</label>
-      <label class="switch">
-        <input type="checkbox" id="optReferences" checked>
-        <span class="slider"></span>
-      </label>
+    <div class="btn-group">
+      <button id="batchExportBtn" class="btn btn-primary btn-small" disabled>
+        批量导出
+      </button>
+      <button id="batchDeleteBtn" class="btn btn-danger btn-small" disabled>
+        删除选中
+      </button>
     </div>
 
-    <div class="option">
-      <label>包含思考过程</label>
-      <label class="switch">
-        <input type="checkbox" id="optReasoning" checked>
-        <span class="slider"></span>
-      </label>
+    <div id="conversationList" class="conversation-list">
+      <div class="empty-state">
+        <div class="empty-state-icon">📂</div>
+        <div>暂无历史记录</div>
+        <div style="font-size: 11px; margin-top: 4px;">保存的会话将显示在这里</div>
+      </div>
     </div>
-  </div>
 
-  <div class="section">
-    <button id="refreshBtn" class="btn btn-secondary">
-      刷新检测
-    </button>
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">数据管理</div>
+      </div>
+      <div class="btn-group">
+        <button id="exportAllBtn" class="btn btn-secondary btn-small">
+          导出全部备份
+        </button>
+        <label for="importFileInput" class="btn btn-secondary btn-small" style="cursor: pointer;">
+          导入备份
+        </label>
+        <button id="clearCacheBtn" class="btn btn-danger btn-small">
+          清空缓存
+        </button>
+      </div>
+      <input type="file" id="importFileInput" class="file-input" accept=".json">
+    </div>
   </div>
 
   <div id="log" class="log"></div>

@@ -1,6 +1,131 @@
-// background.js - Service Worker for AI Session Export Tool
+// background.js - Service Worker for AI Session Export Tool (v2.0)
 
-// ========== HTML to Markdown ==========
+const CacheManager = {
+  STORAGE_KEY: 'ai_export_cache',
+  MAX_CACHE_SIZE: 50,
+
+  async getAll() {
+    try {
+      const result = await chrome.storage.local.get([this.STORAGE_KEY]);
+      return result[this.STORAGE_KEY] || [];
+    } catch (error) {
+      console.error('[AI Export] CacheManager.getAll failed:', error);
+      return [];
+    }
+  },
+
+  async save(conversation) {
+    try {
+      const conversations = await this.getAll();
+
+      const existingIndex = conversations.findIndex(c => c.id === conversation.id);
+      if (existingIndex >= 0) {
+        conversations[existingIndex] = conversation;
+      } else {
+        conversations.unshift(conversation);
+      }
+
+      if (conversations.length > this.MAX_CACHE_SIZE) {
+        conversations.splice(this.MAX_CACHE_SIZE);
+      }
+
+      await chrome.storage.local.set({ [this.STORAGE_KEY]: conversations });
+      return conversation;
+    } catch (error) {
+      console.error('[AI Export] CacheManager.save failed:', error);
+      throw error;
+    }
+  },
+
+  async getById(id) {
+    const conversations = await this.getAll();
+    return conversations.find(c => c.id === id);
+  },
+
+  async delete(id) {
+    const conversations = await this.getAll();
+    const filtered = conversations.filter(c => c.id !== id);
+    await chrome.storage.local.set({ [this.STORAGE_KEY]: filtered });
+    return true;
+  },
+
+  async clear() {
+    await chrome.storage.local.remove([this.STORAGE_KEY]);
+    return true;
+  },
+
+  async search(options = {}) {
+    const { query = '', platform = null, startDate = null, endDate = null, limit = 100, offset = 0 } = options;
+    let conversations = await this.getAll();
+
+    if (query && query.trim()) {
+      const lowerQuery = query.toLowerCase();
+      conversations = conversations.filter(c => {
+        const titleMatch = c.title?.toLowerCase().includes(lowerQuery);
+        const messagesMatch = c.messages?.some(m =>
+          (m.contentText?.toLowerCase().includes(lowerQuery)) ||
+          (m.contentMarkdown?.toLowerCase().includes(lowerQuery))
+        );
+        return titleMatch || messagesMatch;
+      });
+    }
+
+    if (platform) {
+      conversations = conversations.filter(c => c.platform === platform);
+    }
+
+    if (startDate || endDate) {
+      conversations = conversations.filter(c => {
+        const exportedAt = c.exportedAt ? new Date(c.exportedAt) : null;
+        if (!exportedAt) return true;
+
+        if (startDate && exportedAt < new Date(startDate)) return false;
+        if (endDate && exportedAt > new Date(endDate)) return false;
+        return true;
+      });
+    }
+
+    return {
+      conversations: conversations.slice(offset, offset + limit),
+      total: conversations.length,
+      offset,
+      limit,
+    };
+  },
+
+  async exportAll() {
+    const conversations = await this.getAll();
+    return {
+      version: '2.0',
+      exportedAt: new Date().toISOString(),
+      count: conversations.length,
+      conversations,
+    };
+  },
+
+  async importAll(data) {
+    if (!data || !data.conversations || !Array.isArray(data.conversations)) {
+      throw new Error('Invalid import data format');
+    }
+
+    const existing = await this.getAll();
+    const existingIds = new Set(existing.map(c => c.id));
+
+    const newConversations = data.conversations.filter(c => !existingIds.has(c.id));
+    const merged = [...newConversations, ...existing];
+
+    if (merged.length > this.MAX_CACHE_SIZE) {
+      merged.splice(this.MAX_CACHE_SIZE);
+    }
+
+    await chrome.storage.local.set({ [this.STORAGE_KEY]: merged });
+    return {
+      imported: newConversations.length,
+      existing: data.conversations.length - newConversations.length,
+    };
+  },
+};
+
 function htmlToMarkdown(html) {
   if (!html) return '';
   var md = html;
@@ -56,7 +181,6 @@ function decodeHtml(text) {
     .replace(/&#39;/gi, "'");
 }
 
-// ========== Export Functions ==========
 function getDefaultSettings() {
   return {
     includeTimestamp: true,
@@ -73,10 +197,10 @@ function convertToMarkdown(conversation, settings) {
   if (settings.includeModelInfo) {
     md += '---\n';
     md += '\u6807\u9898\uff1a' + (conversation.title || '\u672a\u547d\u540d\u4f1a\u8bdd') + '\n';
-    md += '\u5e73\u53f0\uff1a' + (conversation.platform || 'AI \u4f1a\u8bdd') + '\n';
+    md += '\u5e73\u53f0\uff1a' + (conversation.platformName || conversation.platform || 'AI \u4f1a\u8bdd') + '\n';
     if (conversation.model) md += '\u6a21\u578b\uff1a' + conversation.model + '\n';
     if (conversation.createTime) md += '\u521b\u5efa\u65f6\u95f4\uff1a' + conversation.createTime + '\n';
-    md += '\u5bfc\u51fa\u65f6\u95f4\uff1a' + new Date().toISOString() + '\n';
+    if (conversation.exportedAt) md += '\u5bfc\u51fa\u65f6\u95f4\uff1a' + conversation.exportedAt + '\n';
     md += '---\n\n';
   }
 
@@ -136,10 +260,119 @@ function extractTitleFromMessages(messages) {
   return title || '\u672a\u547d\u540d\u4f1a\u8bdd';
 }
 
-// ========== Message Listeners ==========
-chrome.action.onClicked.addListener(function(tab) {
-  console.log('[AI Export] Extension icon clicked', tab.url);
-});
+function createBatchExportFile(conversations, settings) {
+  var files = [];
+  var indexContent = '# 批量导出会话列表\n\n';
+  indexContent += `导出时间: ${new Date().toISOString()}\n`;
+  indexContent += `共 ${conversations.length} 个会话\n\n`;
+  indexContent += '---\n\n';
+
+  conversations.forEach((conv, index) => {
+    const filename = generateFilename(conv, settings);
+    const markdown = convertToMarkdown(conv, settings);
+
+    files.push({
+      filename,
+      content: markdown,
+      platform: conv.platform,
+      title: conv.title,
+    });
+
+    indexContent += `## ${index + 1}. ${conv.title || '未命名会话'}\n`;
+    indexContent += `- 平台: ${conv.platformName || conv.platform}\n`;
+    indexContent += `- 消息数: ${conv.messages?.length || 0}\n`;
+    indexContent += `- 文件名: ${filename}\n\n`;
+  });
+
+  return {
+    indexContent,
+    files,
+  };
+}
+
+function createTextFileBundle(files, indexContent) {
+  let bundle = '';
+
+  bundle += '='.repeat(60) + '\n';
+  bundle += '           AI 会话批量导出文件\n';
+  bundle += '='.repeat(60) + '\n\n';
+
+  bundle += '【目录索引】\n';
+  bundle += '='.repeat(60) + '\n\n';
+  bundle += indexContent;
+  bundle += '\n' + '='.repeat(60) + '\n\n';
+
+  files.forEach((file, index) => {
+    bundle += `\n${'='.repeat(60)}\n`;
+    bundle += `文件 ${index + 1}: ${file.filename}\n`;
+    bundle += `标题: ${file.title}\n`;
+    bundle += `平台: ${file.platform}\n`;
+    bundle += '='.repeat(60) + '\n\n';
+    bundle += file.content;
+    bundle += '\n\n';
+  });
+
+  return bundle;
+}
+
+async function downloadFile(filename, content, mimeType = 'text/markdown;charset=utf-8') {
+  try {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+
+    await chrome.downloads.download({
+      url: url,
+      filename: filename,
+      saveAs: true,
+    });
+
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return { success: true };
+  } catch (error) {
+    console.error('[AI Export] downloadFile failed:', error);
+    throw error;
+  }
+}
+
+function normalizeConversationId(conversation) {
+  if (conversation.id) return conversation;
+
+  let id = null;
+
+  if (conversation.metadata?.conversationId) {
+    id = conversation.metadata.conversationId;
+  } else if (conversation.conversation_id) {
+    id = conversation.conversation_id;
+  } else if (conversation.messages && conversation.messages.length > 0) {
+    const firstMsg = conversation.messages[0];
+    if (firstMsg.id) {
+      id = firstMsg.id + '-conv';
+    }
+  }
+
+  if (!id) {
+    const url = conversation.url || '';
+    const pathParts = url.split('/').filter(p => p);
+    for (const part of pathParts.reverse()) {
+      if (part.length > 5 && !part.includes('.')) {
+        id = part;
+        break;
+      }
+    }
+  }
+
+  if (!id) {
+    const title = conversation.title || '';
+    const timestamp = conversation.exportedAt || new Date().toISOString();
+    id = title.slice(0, 20).replace(/[^\w]/g, '') + '-' + timestamp.slice(0, 10);
+  }
+
+  if (!id) {
+    id = 'conv-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  }
+
+  return { ...conversation, id };
+}
 
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log('[AI Export] Received message:', message.type);
@@ -157,19 +390,154 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         sendResponse({ success: false, error: error.message });
       }
       return true;
+
     case 'GET_EXPORT_SETTINGS':
       chrome.storage.local.get(['exportSettings'], function(result) {
         sendResponse(result.exportSettings || getDefaultSettings());
       });
       return true;
+
     case 'SAVE_EXPORT_SETTINGS':
       chrome.storage.local.set({ exportSettings: message.settings }, function() {
         sendResponse({ success: true });
       });
       return true;
+
+    case 'SAVE_TO_CACHE':
+      (async () => {
+        try {
+          let conversation = normalizeConversationId(message.conversation);
+          const saved = await CacheManager.save(conversation);
+          sendResponse({ success: true, conversation: saved });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'GET_CACHE_LIST':
+      (async () => {
+        try {
+          const options = message.options || {};
+          const result = await CacheManager.search(options);
+          sendResponse({ success: true, ...result });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'DELETE_FROM_CACHE':
+      (async () => {
+        try {
+          await CacheManager.delete(message.id);
+          sendResponse({ success: true });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'CLEAR_CACHE':
+      (async () => {
+        try {
+          await CacheManager.clear();
+          sendResponse({ success: true });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'EXPORT_ALL_CACHE':
+      (async () => {
+        try {
+          const data = await CacheManager.exportAll();
+          const jsonContent = JSON.stringify(data, null, 2);
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+          const filename = `ai-export-backup-${timestamp}.json`;
+
+          await downloadFile(filename, jsonContent, 'application/json');
+          sendResponse({ success: true, filename });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'IMPORT_CACHE_DATA':
+      (async () => {
+        try {
+          const result = await CacheManager.importAll(message.data);
+          sendResponse({ success: true, ...result });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'BATCH_EXPORT_CONVERSATIONS':
+      (async () => {
+        try {
+          const conversations = message.conversations || [];
+          const settings = message.settings || getDefaultSettings();
+
+          if (conversations.length === 0) {
+            sendResponse({ success: false, error: 'No conversations to export' });
+            return;
+          }
+
+          if (conversations.length === 1) {
+            const conv = conversations[0];
+            const markdown = convertToMarkdown(conv, settings);
+            const filename = generateFilename(conv, settings);
+            await downloadFile(filename, markdown);
+            sendResponse({ success: true, count: 1, filenames: [filename] });
+            return;
+          }
+
+          const bundle = createBatchExportFile(conversations, settings);
+          const content = createTextFileBundle(bundle.files, bundle.indexContent);
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+          const filename = `ai-chat-export-bundle-${timestamp}.md`;
+
+          await downloadFile(filename, content);
+          sendResponse({
+            success: true,
+            count: conversations.length,
+            filename,
+            filenames: bundle.files.map(f => f.filename),
+          });
+        } catch (error) {
+          console.error('[AI Export] Batch export failed:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'DOWNLOAD_FILE':
+      (async () => {
+        try {
+          const result = await downloadFile(message.filename, message.content, message.mimeType);
+          sendResponse({ success: true, ...result });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'PAGE_DATA_CAPTURED':
+      console.log('[AI Export] Page data captured:', message.data?.type);
+      sendResponse({ received: true });
+      return true;
+
     default:
       sendResponse({ error: 'Unknown message type' });
   }
+});
+
+chrome.action.onClicked.addListener(function(tab) {
+  console.log('[AI Export] Extension icon clicked', tab.url);
 });
 
 chrome.storage.local.get(['exportSettings'], function(result) {
@@ -178,4 +546,4 @@ chrome.storage.local.get(['exportSettings'], function(result) {
   }
 });
 
-console.log('[AI Export] Background service worker initialized');
+console.log('[AI Export] Background service worker initialized (v2.0)');
