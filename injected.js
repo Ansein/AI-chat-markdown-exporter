@@ -1,12 +1,12 @@
 // injected.js - 页面注入脚本
 // 运行在页面上下文中，负责拦截网络请求和读取页面状态
+// 增强版：支持多平台、动态内容、更好的异常处理
 
-(function() {
+(function(global) {
   'use strict';
 
-  console.log('[AI Export] Injected script initialized');
+  console.log('[AI Export] Injected script initialized (v2.0)');
 
-  // 存储捕获的数据
   let capturedData = {
     conversations: [],
     messages: [],
@@ -14,39 +14,141 @@
     metadata: {}
   };
 
-  // 已捕获的消息 ID 去重
   let seenMessageIds = new Set();
+  let networkInterceptionEnabled = true;
 
-  // 发送数据到 content script
-  function sendDataToContentScript(data) {
-    window.dispatchEvent(new CustomEvent('AIExportData', {
-      detail: data
-    }));
+  const platformPatterns = {
+    chatgpt: {
+      name: 'chatgpt',
+      urls: ['chatgpt.com', 'chat.openai.com'],
+      apiPatterns: [
+        '/backend-api/conversation',
+        '/v1/chat/completions',
+        '/api/conversation',
+        '/backend-api/message',
+      ],
+    },
+    claude: {
+      name: 'claude',
+      urls: ['claude.ai', 'anthropic.com'],
+      apiPatterns: [
+        '/api/organizations',
+        '/api/conversations',
+        '/api/chat_conversations',
+        '/api/message',
+      ],
+    },
+    yiyan: {
+      name: 'yiyan',
+      urls: ['yiyan.baidu.com', 'yiyan.baidu.com.cn'],
+      apiPatterns: [
+        '/api/chat',
+        '/api/conversation',
+        '/api/message',
+        '/backend-api',
+        '/v1/chat',
+      ],
+    },
+    xinghuo: {
+      name: 'xinghuo',
+      urls: ['xinghuo.xfyun.cn', 'sparkdesk.xfyun.cn'],
+      apiPatterns: [
+        '/api/chat',
+        '/api/conversation',
+        '/api/message',
+        '/backend-api',
+        '/v1/chat',
+      ],
+    },
+    tongyi: {
+      name: 'tongyi',
+      urls: ['tongyi.aliyun.com', 'qianwen.aliyun.com'],
+      apiPatterns: [
+        '/api/chat',
+        '/api/conversation',
+        '/api/message',
+        '/backend-api',
+        '/v1/chat',
+        '/api/v1',
+      ],
+    },
+    doubao: {
+      name: 'doubao',
+      urls: ['doubao.com'],
+      apiPatterns: [
+        '/api/chat',
+        '/api/conversation',
+        '/api/message',
+        '/backend-api',
+        '/v1/chat',
+        '/api/v1',
+      ],
+    },
+  };
+
+  function getCurrentPlatform() {
+    const url = window.location.href;
+    for (const [key, platform] of Object.entries(platformPatterns)) {
+      if (platform.urls.some(p => url.includes(p))) {
+        return platform;
+      }
+    }
+    return null;
   }
 
-  // ========== Fetch 拦截 ==========
+  function sendDataToContentScript(data) {
+    try {
+      window.dispatchEvent(new CustomEvent('AIExportData', {
+        detail: data
+      }));
+    } catch (error) {
+      console.error('[AI Export] Failed to send data to content script:', error);
+    }
+  }
+
+  function isAIRequest(url) {
+    if (!url || typeof url !== 'string') return false;
+
+    const lower = url.toLowerCase();
+    const patterns = [
+      'chatgpt', 'openai', 'claude', 'anthropic',
+      'conversation', 'chat/completions', '/api/chat',
+      '/api/conversation', '/backend-api',
+      'yiyan', 'xinghuo', 'sparkdesk', 'tongyi', 'qianwen', 'doubao',
+      '/message', '/api/message',
+    ];
+
+    return patterns.some(function(p) { return lower.indexOf(p) !== -1; });
+  }
+
   const originalFetch = window.fetch;
   window.fetch = function(...args) {
+    if (!networkInterceptionEnabled) {
+      return originalFetch.apply(this, args);
+    }
+
     const url = args[0]?.url || args[0];
     const options = args[1] || {};
 
     return originalFetch.apply(this, args).then(response => {
-      const clonedResponse = response.clone();
-      if (isAIRequest(url)) {
-        handleAIRequest(url, options, clonedResponse).catch(function(err) {
-          console.error('[AI Export] Failed to handle AI request:', err);
-        });
+      if (!isAIRequest(url)) {
+        return response;
       }
+
+      const clonedResponse = response.clone();
+      handleAIRequest(url, options, clonedResponse).catch(function(err) {
+        console.warn('[AI Export] Failed to handle AI request:', err.message);
+      });
+
       return response;
     }).catch(function(error) {
-      console.error('[AI Export] Fetch error:', error);
+      console.warn('[AI Export] Fetch error:', error.message);
       throw error;
     });
   };
 
-  // ========== XMLHttpRequest 拦截 ==========
   const originalXHROpen = XMLHttpRequest.prototype.open;
-  const originalXHROpenSend = XMLHttpRequest.prototype.send;
+  const originalXHRSend = XMLHttpRequest.prototype.send;
 
   XMLHttpRequest.prototype.open = function(method, url, ...restArgs) {
     this._url = url;
@@ -55,6 +157,10 @@
   };
 
   XMLHttpRequest.prototype.send = function(body) {
+    if (!networkInterceptionEnabled) {
+      return originalXHRSend.apply(this, [body]);
+    }
+
     const xhr = this;
     const url = this._url;
 
@@ -66,38 +172,27 @@
             body: body,
             headers: {}
           }, {
-            json: function() { return JSON.parse(this.responseText); },
-            text: function() { return this.responseText; }
+            json: function() {
+              try {
+                return JSON.parse(this.responseText);
+              } catch (e) {
+                return null;
+              }
+            },
+            text: function() { return this.responseText; },
+            responseText: xhr.responseText
           }).catch(function(err) {
-            console.error('[AI Export] Failed to handle XHR:', err);
+            console.warn('[AI Export] Failed to handle XHR:', err.message);
           });
         } catch (err) {
-          console.warn('[AI Export] XHR response parse error:', err);
+          console.warn('[AI Export] XHR response parse error:', err.message);
         }
       });
     }
 
-    return originalXHROpenSend.apply(this, [body]);
+    return originalXHRSend.apply(this, [body]);
   };
 
-  // ========== URL 模式检测 ==========
-  function isClaudeConversationAPI(url) {
-    if (!url || typeof url !== 'string') return false;
-    return /claude\.ai\/api\/organizations\/[^/]+\/chat_conversations/.test(url);
-  }
-
-  function isAIRequest(url) {
-    if (!url || typeof url !== 'string') return false;
-    const lower = url.toLowerCase();
-    const patterns = [
-      'chatgpt', 'openai', 'claude', 'anthropic',
-      'conversation', 'chat/completions', '/api/chat',
-      '/api/conversation', '/backend-api'
-    ];
-    return patterns.some(function(p) { return lower.indexOf(p) !== -1; });
-  }
-
-  // ========== 处理 AI 请求 ==========
   async function handleAIRequest(url, options, response) {
     try {
       let data;
@@ -105,19 +200,24 @@
         data = await response.json();
       } catch(e) {
         const text = await response.text();
-        if (text.startsWith('{') || text.startsWith('[')) {
-          data = JSON.parse(text);
+        if (text && (text.startsWith('{') || text.startsWith('['))) {
+          try {
+            data = JSON.parse(text);
+          } catch (parseErr) {
+            return;
+          }
         } else {
           return;
         }
       }
 
-      console.log('[AI Export] AI response data:', Object.keys(data));
+      if (!data) return;
 
-      // 解析响应数据
-      const parsed = parseAIResponse(url, data);
+      const platform = getCurrentPlatform();
+      console.log('[AI Export] AI response captured for platform:', platform?.name || 'unknown');
+
+      const parsed = parseAIResponse(url, data, platform);
       if (parsed && parsed.messages && parsed.messages.length > 0) {
-        // 去重
         const newMessages = parsed.messages.filter(function(m) {
           if (m.id && seenMessageIds.has(m.id)) return false;
           if (m.id) seenMessageIds.add(m.id);
@@ -131,7 +231,8 @@
           sendDataToContentScript({
             type: 'MESSAGES_CAPTURED',
             messages: capturedData.messages,
-            metadata: capturedData.metadata
+            metadata: capturedData.metadata,
+            platform: platform?.name,
           });
         }
       }
@@ -140,96 +241,124 @@
     }
   }
 
-  // ========== 解析 AI 响应 ==========
-  function parseAIResponse(url, data) {
-    // Claude 对话树 API (优先)
-    if (isClaudeConversationAPI(url) && data.children && Array.isArray(data.children)) {
-      return parseClaudeConversationTree(data);
+  function parseAIResponse(url, data, platform) {
+    if (!data) return null;
+
+    if (platform) {
+      const platformParser = getPlatformParser(platform.name);
+      if (platformParser) {
+        return platformParser(data, url);
+      }
     }
 
-    // ChatGPT 响应
-    if (data.conversation || data.messages) {
-      return parseChatGPTResponse(data);
-    }
-
-    // Claude 单条消息流式响应
-    if (data.completion || data.content) {
-      return parseClaudeResponse(data);
-    }
-
-    // 通用响应
-    return parseGenericResponse(data);
+    return parseGenericResponse(data, url);
   }
 
-  // ========== ChatGPT 响应解析 ==========
-  function parseChatGPTResponse(data) {
+  function getPlatformParser(platformName) {
+    const parsers = {
+      chatgpt: parseChatGPTResponse,
+      claude: parseClaudeResponse,
+      yiyan: parseCommonResponse,
+      xinghuo: parseCommonResponse,
+      tongyi: parseCommonResponse,
+      doubao: parseCommonResponse,
+    };
+    return parsers[platformName] || parseGenericResponse;
+  }
+
+  function parseChatGPTResponse(data, url) {
     const messages = [];
     const conversation = data.conversation || {};
 
     if (Array.isArray(data.messages)) {
-      data.messages.forEach(function(msg) {
-        if (!msg.id || !msg.author) return;
-        const role = msg.author && msg.author.role ? msg.author.role : msg.role;
-        const content = (msg.content && msg.content.parts) ? msg.content.parts.join('') : (msg.content && msg.content.text ? msg.content.text : '');
+      data.messages.forEach(function(msg, index) {
+        if (!msg.id) return;
+
+        const role = (msg.author && msg.author.role) ? msg.author.role : msg.role;
+        let content = '';
+
+        if (msg.content && msg.content.parts && Array.isArray(msg.content.parts)) {
+          content = msg.content.parts.map(function(p) {
+            if (typeof p === 'string') return p;
+            if (p && p.text) return p.text;
+            return '';
+          }).join('');
+        } else if (msg.content && msg.content.text) {
+          content = msg.content.text;
+        } else if (typeof msg.content === 'string') {
+          content = msg.content;
+        }
 
         messages.push({
           id: msg.id,
           role: role === 'user' ? 'user' : 'assistant',
           contentText: content,
           contentMarkdown: content,
-          createdAt: msg.create_time ? new Date(msg.create_time).toISOString() : null,
+          createdAt: msg.create_time ? new Date(msg.create_time * 1000).toISOString() : null,
           model: (msg.metadata && msg.metadata.model) ? msg.metadata.model : null,
           citations: extractCitationsFromData(msg),
+          reasoning_summary: msg.metadata?.reasoning_content || null,
         });
       });
     }
 
     return {
-      messages: messages,
+      messages,
       metadata: {
         conversationId: (conversation && conversation.id) ? conversation.id : data.conversation_id,
         title: (conversation && conversation.title) ? conversation.title : null,
         model: data.model,
-      }
+      },
     };
   }
 
-  // ========== Claude 对话树解析 ==========
-  function parseClaudeConversationTree(data) {
-    var messages = [];
+  function parseClaudeResponse(data, url) {
+    if (data.children && Array.isArray(data.children)) {
+      return parseClaudeConversationTree(data);
+    }
 
-    // 递归展平消息树
+    if (data.completion || data.content) {
+      return parseClaudeSingleMessage(data);
+    }
+
+    if (data.messages) {
+      return parseCommonResponse(data, url);
+    }
+
+    return null;
+  }
+
+  function parseClaudeConversationTree(data) {
+    const messages = [];
+
     function flattenMessageTree(node) {
       if (!node) return;
 
-      // 当前节点有 sender 和 content
       if (node.sender && node.content) {
-        var role = node.sender === 'human' ? 'user' : 'assistant';
-        var textContent = '';
-        var reasoningText = '';
-        var citations = [];
-        var model = node.model;
+        const role = node.sender === 'human' ? 'user' : 'assistant';
+        let textContent = '';
+        let reasoningText = '';
+        const citations = [];
+        const model = node.model;
 
         if (Array.isArray(node.content)) {
-          for (var i = 0; i < node.content.length; i++) {
-            var block = node.content[i];
+          for (const block of node.content) {
             if (block.type === 'text' && block.text) {
               textContent += block.text;
             } else if (block.type === 'thinking' && block.thinking) {
               reasoningText += block.thinking;
             } else if (block.type === 'tool_use' && block.name === 'web_search') {
-              // 提取 web search 的 URL
               if (block.input && block.input.query) {
                 citations.push({
                   url: 'https://www.google.com/search?q=' + encodeURIComponent(block.input.query),
-                  title: 'Search: ' + block.input.query
+                  title: 'Search: ' + block.input.query,
                 });
               }
             } else if (block.type === 'tool_result' && block.content) {
               if (typeof block.content === 'string') {
-                var urls = block.content.match(/https?:\/\/[^\s"<>]+/g);
+                const urls = block.content.match(/https?:\/\/[^\s"<>]+/g);
                 if (urls) {
-                  urls.forEach(function(u) {
+                  urls.forEach(u => {
                     citations.push({ url: u, title: u });
                   });
                 }
@@ -254,30 +383,27 @@
         }
       }
 
-      // 递归子节点
       if (Array.isArray(node.children)) {
-        for (var j = 0; j < node.children.length; j++) {
-          flattenMessageTree(node.children[j]);
+        for (const child of node.children) {
+          flattenMessageTree(child);
         }
       }
     }
 
-    // 从根节点开始展平
     flattenMessageTree(data);
 
     return {
-      messages: messages,
+      messages,
       metadata: {
         conversationId: data.uuid || null,
         title: data.name || null,
         model: data.model || null,
-      }
+      },
     };
   }
 
-  // ========== Claude 单条消息响应解析 ==========
-  function parseClaudeResponse(data) {
-    var messages = [];
+  function parseClaudeSingleMessage(data) {
+    const messages = [];
 
     if (data.completion) {
       messages.push({
@@ -289,10 +415,8 @@
       });
     }
 
-    // 处理 content blocks (streaming API response)
     if (Array.isArray(data.content)) {
-      for (var i = 0; i < data.content.length; i++) {
-        var block = data.content[i];
+      for (const block of data.content) {
         if (block.type === 'text' && block.text) {
           messages.push({
             id: data.id || ('msg-' + Date.now()),
@@ -301,7 +425,6 @@
             contentMarkdown: block.text,
           });
         } else if (block.type === 'thinking' && block.thinking) {
-          // reasoning/thinking block
           if (messages.length === 0) {
             messages.push({
               id: data.id || ('msg-' + Date.now()),
@@ -318,38 +441,99 @@
     }
 
     return {
-      messages: messages,
+      messages,
       metadata: {
         model: data.model,
-      }
+      },
     };
   }
 
-  // ========== 通用响应解析 ==========
-  function parseGenericResponse(data) {
-    var messages = [];
-    var possibleFields = ['messages', 'conversation', 'history', 'data', 'response'];
-    for (var i = 0; i < possibleFields.length; i++) {
-      var field = possibleFields[i];
-      if (Array.isArray(data[field])) {
-        data[field].forEach(function(msg) {
-          if (msg.content || msg.text || msg.message) {
-            messages.push({
-              id: msg.id || ('msg-' + Date.now()),
-              role: msg.role || 'assistant',
-              contentText: msg.content || msg.text || msg.message,
-            });
-          }
+  function parseCommonResponse(data, url) {
+    const messages = [];
+
+    if (data.messages && Array.isArray(data.messages)) {
+      data.messages.forEach(function(msg, index) {
+        const role = msg.role || (msg.sender === 'user' ? 'user' : 'assistant');
+        let content = '';
+
+        if (typeof msg.content === 'string') {
+          content = msg.content;
+        } else if (msg.content && Array.isArray(msg.content)) {
+          content = msg.content.map(function(c) {
+            return c.text || c.content || '';
+          }).join('');
+        } else if (msg.text) {
+          content = msg.text;
+        } else if (msg.choices && Array.isArray(msg.choices)) {
+          content = msg.choices.map(function(c) {
+            return c.delta?.content || c.message?.content || '';
+          }).join('');
+        }
+
+        messages.push({
+          id: msg.id || `msg-${index}`,
+          role: role === 'user' ? 'user' : 'assistant',
+          contentText: content,
+          contentMarkdown: content,
+          createdAt: msg.created_at || msg.timestamp || msg.time || null,
+          model: msg.model || null,
+          reasoning_summary: msg.thinking || msg.reasoning || msg.thought || null,
+        });
+      });
+    }
+
+    if (data.choices && Array.isArray(data.choices) && messages.length === 0) {
+      const content = data.choices.map(function(c) {
+        return c.delta?.content || c.message?.content || '';
+      }).join('');
+
+      if (content) {
+        messages.push({
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          contentText: content,
+          contentMarkdown: content,
+          createdAt: data.created ? new Date(data.created * 1000).toISOString() : null,
+          model: data.model || null,
+          reasoning_summary: null,
         });
       }
     }
-    return { messages: messages };
+
+    const contentFields = ['result', 'content', 'text', 'output', 'answer', 'response'];
+    for (const field of contentFields) {
+      if (data[field] && messages.length === 0) {
+        const content = data[field];
+        messages.push({
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          contentText: content,
+          contentMarkdown: content,
+          createdAt: data.created_at || null,
+          model: data.model || null,
+          reasoning_summary: data.thinking || data.reasoning || null,
+        });
+        break;
+      }
+    }
+
+    return {
+      messages,
+      metadata: {
+        conversationId: data.conversationId || data.conversation_id || data.id || data.session_id || data.dialog_id,
+        title: data.title,
+        model: data.model,
+      },
+    };
   }
 
-  // ========== 从数据中提取引用 ==========
+  function parseGenericResponse(data, url) {
+    return parseCommonResponse(data, url);
+  }
+
   function extractCitationsFromData(msg) {
-    var citations = [];
-    var metadata = msg.metadata || msg.citations || msg.references;
+    const citations = [];
+    const metadata = msg.metadata || msg.citations || msg.references;
 
     if (Array.isArray(metadata)) {
       metadata.forEach(function(cite, index) {
@@ -361,7 +545,7 @@
       });
     } else if (metadata && typeof metadata === 'object') {
       Object.keys(metadata).forEach(function(key, index) {
-        var cite = metadata[key];
+        const cite = metadata[key];
         if (cite && cite.url) {
           citations.push({
             index: index + 1,
@@ -375,31 +559,30 @@
     return citations;
   }
 
-  // ========== 读取页面状态 ==========
   function readPageState() {
-    var possibleGlobals = [
+    const possibleGlobals = [
       '__CHATGPT_DATA__',
       '__CLAUDE_DATA__',
       '__AI_CONVERSATION__',
+      '__AI_EXPORT__',
     ];
 
-    for (var i = 0; i < possibleGlobals.length; i++) {
+    for (const key of possibleGlobals) {
       try {
-        var obj = window[possibleGlobals[i]];
-        if (obj) {
-          console.log('[AI Export] Found data in:', possibleGlobals[i]);
+        const obj = window[key];
+        if (obj && key !== '__AI_EXPORT__') {
+          console.log('[AI Export] Found data in global:', key);
           return obj;
         }
       } catch(e) {}
     }
 
-    // 尝试从 script 标签读取内嵌数据
-    var scripts = document.querySelectorAll('script[id*="data"], script[class*="data"], script[type="application/json"]');
-    for (var j = 0; j < scripts.length; j++) {
+    const scripts = document.querySelectorAll('script[id*="data"], script[class*="data"], script[type="application/json"]');
+    for (const script of scripts) {
       try {
-        var data = JSON.parse(scripts[j].textContent);
+        const data = JSON.parse(script.textContent);
         if (data.messages || data.conversation) {
-          console.log('[AI Export] Found data in script:', scripts[j].id || scripts[j].className);
+          console.log('[AI Export] Found data in script:', script.id || script.className);
           return data;
         }
       } catch(e) {}
@@ -408,36 +591,42 @@
     return null;
   }
 
-  // ========== 页面加载完成后读取初始状态 ==========
   function onPageLoad() {
     console.log('[AI Export] Page loaded, reading initial state...');
 
-    var pageState = readPageState();
-    if (pageState) {
-      var parsed = parseAIResponse('', pageState);
-      if (parsed && parsed.messages && parsed.messages.length > 0) {
-        capturedData.messages = parsed.messages;
-        capturedData.metadata = parsed.metadata || {};
+    try {
+      const pageState = readPageState();
+      if (pageState) {
+        const platform = getCurrentPlatform();
+        const parsed = parseAIResponse('', pageState, platform);
+        if (parsed && parsed.messages && parsed.messages.length > 0) {
+          capturedData.messages = parsed.messages;
+          capturedData.metadata = parsed.metadata || {};
 
-        sendDataToContentScript({
-          type: 'INITIAL_STATE_CAPTURED',
-          messages: capturedData.messages,
-          metadata: capturedData.metadata
-        });
+          sendDataToContentScript({
+            type: 'INITIAL_STATE_CAPTURED',
+            messages: capturedData.messages,
+            metadata: capturedData.metadata,
+            platform: platform?.name,
+          });
+        }
       }
+    } catch (error) {
+      console.error('[AI Export] Failed to read page state:', error);
     }
   }
 
-  // 等待 DOM 加载完成
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', onPageLoad);
   } else {
     onPageLoad();
   }
 
-  // ========== 暴露全局接口 ==========
   window.__AI_EXPORT__ = {
-    getData: function() { return capturedData; },
+    getData: function() {
+      return { ...capturedData };
+    },
+
     exportNow: function() {
       sendDataToContentScript({
         type: 'EXPORT_REQUESTED',
@@ -445,11 +634,23 @@
       });
       return capturedData;
     },
+
     clearData: function() {
       capturedData = { conversations: [], messages: [], references: [], metadata: {} };
       seenMessageIds = new Set();
-    }
+    },
+
+    setNetworkInterception: function(enabled) {
+      networkInterceptionEnabled = enabled;
+    },
+
+    getPlatform: getCurrentPlatform,
+
+    getMessages: function() {
+      return [...capturedData.messages];
+    },
   };
 
-  console.log('[AI Export] Injection complete, global interface exposed');
-})();
+  console.log('[AI Export] Injection complete, global interface exposed (v2.0)');
+
+})(typeof window !== 'undefined' ? window : this);
