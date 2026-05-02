@@ -1,17 +1,29 @@
 {
   "manifest_version": 3,
   "name": "AI 会话导出工具",
-  "version": "1.0.1",
-  "description": "从 AI 会话网页中导出内容为 Markdown 格式，支持 ChatGPT、Claude 等平台",
+  "version": "2.0.0",
+  "description": "从 AI 会话网页中导出内容为 Markdown 格式，支持 ChatGPT、Claude、文心一言、讯飞星火、通义千问、豆包等平台",
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "tabs",
+    "downloads",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
     "https://claude.ai/*",
-    "https://*.anthropic.com/*"
+    "https://*.anthropic.com/*",
+    "https://yiyan.baidu.com/*",
+    "https://yiyan.baidu.com.cn/*",
+    "https://xinghuo.xfyun.cn/*",
+    "https://sparkdesk.xfyun.cn/*",
+    "https://tongyi.aliyun.com/*",
+    "https://qianwen.aliyun.com/*",
+    "https://doubao.com/*",
+    "https://www.doubao.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -24,8 +36,17 @@
     {
       "matches": [
         "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
         "https://claude.ai/*",
-        "https://*.anthropic.com/*"
+        "https://*.anthropic.com/*",
+        "https://yiyan.baidu.com/*",
+        "https://yiyan.baidu.com.cn/*",
+        "https://xinghuo.xfyun.cn/*",
+        "https://sparkdesk.xfyun.cn/*",
+        "https://tongyi.aliyun.com/*",
+        "https://qianwen.aliyun.com/*",
+        "https://doubao.com/*",
+        "https://www.doubao.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_start"
@@ -33,11 +54,33 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["injected.js", "html-to-markdown.js", "exporter.js"],
+      "resources": [
+        "injected.js",
+        "html-to-markdown.js",
+        "exporter.js",
+        "core/platforms/platformManager.js",
+        "core/platforms/chatgpt.js",
+        "core/platforms/claude.js",
+        "core/platforms/yiyan.js",
+        "core/platforms/xinghuo.js",
+        "core/platforms/tongyi.js",
+        "core/platforms/doubao.js",
+        "core/utils/htmlToMarkdown.js",
+        "core/storage/cacheManager.js"
+      ],
       "matches": [
         "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
         "https://claude.ai/*",
-        "https://*.anthropic.com/*"
+        "https://*.anthropic.com/*",
+        "https://yiyan.baidu.com/*",
+        "https://yiyan.baidu.com.cn/*",
+        "https://xinghuo.xfyun.cn/*",
+        "https://sparkdesk.xfyun.cn/*",
+        "https://tongyi.aliyun.com/*",
+        "https://qianwen.aliyun.com/*",
+        "https://doubao.com/*",
+        "https://www.doubao.com/*"
       ]
     }
   ]
